@@ -130,13 +130,6 @@ flutter analyze
 flutter test
 ```
 
-## Teknologi
-
-- Flutter dan Dart
-- Excel (`excel`) untuk membaca dan membuat workbook
-- SQLite lokal untuk menyimpan foto aplikasi dan arsip berkas impor
-- Shared Preferences untuk data keuangan dan pengaturan aplikasi
-
 ## Tautan
 
 - GitHub: <https://github.com/cuoraex/pocketr>
