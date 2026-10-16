@@ -1,3 +1,6 @@
+@Tags(['readme-screenshots'])
+library;
+
 import 'dart:io';
 import 'dart:ui' as ui;
 

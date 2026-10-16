@@ -17,6 +17,7 @@ import 'package:window_manager/window_manager.dart';
 import 'app_localization.dart';
 import 'backup.dart';
 import 'data.dart';
+import 'finance_database.dart';
 import 'finance_excel.dart';
 import 'hpp_import.dart';
 import 'hpp_template.dart';
@@ -34,7 +35,7 @@ Future<void> main() async {
 }
 
 const _blue = Color(0xff2f7de1);
-const _appVersion = '1.2';
+const _appVersion = '1.2.2';
 const _ink = Color(0xff10202c);
 const _muted = Color(0xff52697b);
 const _green = Color(0xff1f8f4f);
@@ -52,6 +53,10 @@ final _appNotification = ValueNotifier<_AppNotification?>(null);
 final Future<Uint8List> _defaultBrandImageBytes = _loadDefaultBrandImageBytes();
 const _windowStateChannel = MethodChannel('pocketr/window_state');
 
+bool _isSqliteDatabase(Uint8List bytes) =>
+    bytes.length >= 16 &&
+    String.fromCharCodes(bytes.take(16)) == 'SQLite format 3\u0000';
+
 Future<Uint8List> _loadDefaultBrandImageBytes() async {
   try {
     final data = await rootBundle.load('assets/images/pocketr_default.png');
@@ -60,6 +65,14 @@ Future<Uint8List> _loadDefaultBrandImageBytes() async {
     debugPrint('Could not load the default profile image: $error\n$stackTrace');
     rethrow;
   }
+}
+
+bool _bytesEqual(Uint8List first, Uint8List second) {
+  if (first.length != second.length) return false;
+  for (var index = 0; index < first.length; index++) {
+    if (first[index] != second[index]) return false;
+  }
+  return true;
 }
 
 class _AppNotification {
@@ -137,7 +150,8 @@ Widget _windowAwareBlur({
   valueListenable: _windowTransitionInProgress,
   child: child,
   builder: (context, transitioning, content) {
-    if (transitioning || !enabled) return content!;
+    // Backdrop blur on many cards inside a scroll view flickers on phone GPUs.
+    if (transitioning || !enabled || Platform.isAndroid) return content!;
     return BackdropFilter(
       filter: ImageFilter.blur(sigmaX: sigmaX, sigmaY: sigmaY ?? sigmaX),
       child: content,
@@ -427,6 +441,8 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   final _searchController = TextEditingController();
   final _salesScrollController = ScrollController();
   final _productPickerScrollController = ScrollController();
+  final _productSearchController = TextEditingController();
+  bool _productSearchOpen = false;
   TapDownDetails? _profileTapDetails;
   Timer? _windowTransitionResetTimer;
   final _slideUpEntranceOrder = _SlideUpEntranceOrder();
@@ -671,23 +687,30 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     _searchController.dispose();
     _salesScrollController.dispose();
     _productPickerScrollController.dispose();
+    _productSearchController.dispose();
     super.dispose();
   }
 
   Future<void> _load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final hasCurrentStorage = prefs.getString(_storageKey) != null;
-      final stored =
-          prefs.getString(_storageKey) ?? prefs.getString(_legacyStorageKey);
-      if (stored != null) {
-        _data = FinanceData.fromBackup(stored);
+      final savedData = await FinanceSqliteStore.instance.load();
+      if (savedData != null) {
+        _data = savedData;
         await _hydrateApplicationImages(_data);
-        final compactData = _data.toBackup(includeImages: false);
-        final saved = await prefs.setString(_storageKey, compactData);
-        if (!saved) throw StateError('Migrasi penyimpanan lokal gagal.');
-        if (!hasCurrentStorage) {
-          await prefs.remove(_legacyStorageKey);
+        await _archiveLegacyJsonStorage(prefs);
+      } else {
+        final stored =
+            prefs.getString(_storageKey) ?? prefs.getString(_legacyStorageKey);
+        if (stored != null) {
+          _data = FinanceData.fromBackup(stored);
+          await _hydrateApplicationImages(_data);
+          await FinanceSqliteStore.instance.save(_data);
+          final migratedData = await FinanceSqliteStore.instance.load();
+          if (migratedData == null) {
+            throw StateError('Migrasi penyimpanan lokal gagal diverifikasi.');
+          }
+          await _archiveLegacyJsonStorage(prefs);
         }
       }
       _languageCode = prefs.getString(appLanguagePreferenceKey) == 'en'
@@ -731,6 +754,40 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           _loading = false;
           _loadError = 'Data tidak bisa dibuka: $error';
         });
+      }
+    }
+  }
+
+  Future<void> _archiveLegacyJsonStorage(SharedPreferences prefs) async {
+    final directory = Directory(
+      p.join(
+        (await FinanceSqliteStore.instance.supportDirectory()).path,
+        'legacy_backup',
+      ),
+    );
+    await directory.create(recursive: true);
+    for (final key in [_storageKey, _legacyStorageKey]) {
+      final source = prefs.getString(key);
+      if (source == null) continue;
+      final file = File(p.join(directory.path, '$key.json'));
+      if (await file.exists() && await file.readAsString() != source) {
+        throw FileSystemException(
+          'Arsip JSON lama sudah ada dengan isi berbeda.',
+          file.path,
+        );
+      }
+      if (!await file.exists()) {
+        await file.writeAsString(source, flush: true);
+      }
+      if (file.readAsStringSync() != source) {
+        throw FileSystemException(
+          'Verifikasi arsip JSON lama gagal.',
+          file.path,
+        );
+      }
+      final removed = await prefs.remove(key);
+      if (!removed) {
+        throw StateError('Penyimpanan JSON lama gagal dipindahkan ke arsip.');
       }
     }
   }
@@ -1290,12 +1347,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   Future<bool> _save({bool rebuild = true}) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = await prefs.setString(
-        _storageKey,
-        _data.toBackup(includeImages: false),
-      );
-      if (!saved) throw StateError('Penyimpanan lokal menolak data.');
+      await FinanceSqliteStore.instance.save(_data);
       await _persistSelectedMonth(_month);
       if (mounted && rebuild) setState(() {});
       return true;
@@ -1433,8 +1485,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       false;
 
   String _backupDateStamp(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}'
+      '${date.month.toString().padLeft(2, '0')}'
       '${date.day.toString().padLeft(2, '0')}-'
-      '${date.month.toString().padLeft(2, '0')}-${date.year}';
+      '${date.hour.toString().padLeft(2, '0')}'
+      '${date.minute.toString().padLeft(2, '0')}'
+      '${date.second.toString().padLeft(2, '0')}-'
+      '${date.millisecond.toString().padLeft(3, '0')}';
 
   Future<void> _backup() async {
     try {
@@ -1443,14 +1500,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           dialogTitle: localizeAppText('Simpan cadangan PocketR'),
           fileName: 'pocketr-${_backupDateStamp(DateTime.now())}.pcktr',
           type: FileType.custom,
-          allowedExtensions: ['pcktr', 'json'],
+          allowedExtensions: ['pcktr', 'db'],
           lockParentWindow: true,
         ),
       );
       if (path == null) return;
       final bytes = await _createBackupBytes();
-      await File(ensureBackupFileExtension(path))
-          .writeAsBytes(bytes, flush: true);
+      await writeTimestampedBackup(path, bytes, prefix: 'pocketr-');
       _message('Cadangan berhasil disimpan.');
     } catch (error) {
       _message('Cadangan gagal dibuat: $error', isError: true);
@@ -1466,7 +1522,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           dialogTitle: localizeAppText('Simpan cadangan lengkap PocketR'),
           fileName: 'pocketr-lengkap-${_backupDateStamp(DateTime.now())}.pcktr',
           type: FileType.custom,
-          allowedExtensions: ['pcktr', 'json'],
+          allowedExtensions: ['pcktr', 'db'],
           lockParentWindow: true,
         ),
       );
@@ -1476,12 +1532,8 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       final files = await LocalFileArchive.instance.listFiles(
         includeRestoredBackups: false,
       );
-      final bytes = await compute(
-        createFullBackupBytesFromPayload,
-        createFullBackupPayload(_data, files),
-      );
-      await File(ensureBackupFileExtension(path))
-          .writeAsBytes(bytes, flush: true);
+      final bytes = createFullBackupBytes(_data, files);
+      await writeTimestampedBackup(path, bytes, prefix: 'pocketr-lengkap-');
       onStatus?.call(
         'Cadangan lengkap beserta foto berhasil disimpan.',
         isLoading: false,
@@ -1498,12 +1550,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   }
 
   Future<Uint8List> _createBackupBytes() async {
-    final backup = {
-      'format': 'pocketr-backup',
-      'version': 3,
-      'data': jsonDecode(_data.toBackup(includeImages: false)),
-    };
-    return Uint8List.fromList(utf8.encode(jsonEncode(backup)));
+    return createBackupBytes(_data);
   }
 
   void _configureAutoSaveTimer({bool saveImmediately = false}) {
@@ -1546,8 +1593,10 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           _autoSaveDirectory != directoryPath) {
         return;
       }
-      final file = File(p.join(directoryPath, 'pocketr-autosave.pcktr'));
-      await file.writeAsBytes(bytes, flush: true);
+      await writeOverwriteBackup(
+        p.join(directoryPath, 'pocketr-autosave.pcktr'),
+        bytes,
+      );
       _autoSaveErrorNotified = false;
       if (mounted) {
         setState(() {
@@ -1570,10 +1619,22 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   Future<void> _selectAutoSaveDirectory() async {
     try {
+      // A missing folder makes the native picker fail, so start from the
+      // nearest existing ancestor instead.
+      String? initialDirectory = _autoSaveDirectory;
+      if (initialDirectory != null && initialDirectory.isNotEmpty) {
+        var current = Directory(initialDirectory);
+        while (!current.existsSync() && current.parent.path != current.path) {
+          current = current.parent;
+        }
+        initialDirectory = current.existsSync() ? current.path : null;
+      } else {
+        initialDirectory = null;
+      }
       final directory = await _withOutsideDismissedPicker(
         () => FilePicker.platform.getDirectoryPath(
           dialogTitle: localizeAppText('Pilih direktori auto-save PocketR'),
-          initialDirectory: _autoSaveDirectory,
+          initialDirectory: initialDirectory,
           lockParentWindow: true,
         ),
       );
@@ -1663,16 +1724,25 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     }
   }
 
-  Future<void> _archiveInputFile(
-    String name,
-    Uint8List bytes,
-    String source,
-  ) async {
-    await LocalFileArchive.instance.saveFile(
-      name: name,
-      bytes: bytes,
-      source: source,
+  Future<void> _archiveLegacyJsonBackup(String name, Uint8List bytes) async {
+    final directory = Directory(
+      p.join(
+        (await FinanceSqliteStore.instance.supportDirectory()).path,
+        'legacy_backup',
+      ),
     );
+    await directory.create(recursive: true);
+    final basename = p.basenameWithoutExtension(name);
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final archivedFile = File(p.join(directory.path, '$basename-$stamp.json'));
+    await archivedFile.writeAsBytes(bytes, flush: true);
+    final archivedBytes = archivedFile.readAsBytesSync();
+    if (!_bytesEqual(archivedBytes, bytes)) {
+      throw FileSystemException(
+        'Verifikasi arsip JSON lama gagal.',
+        archivedFile.path,
+      );
+    }
   }
 
   Future<void> _saveApplicationImage(
@@ -1750,7 +1820,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
         () => FilePicker.platform.pickFiles(
           dialogTitle: localizeAppText('Pilih berkas cadangan PocketR'),
           type: FileType.custom,
-          allowedExtensions: ['pcktr', 'json'],
+          allowedExtensions: ['pcktr', 'db', 'json'],
           withData: true,
           lockParentWindow: true,
         ),
@@ -1760,16 +1830,22 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       if (bytes == null) {
         throw const FormatException('Isi berkas tidak terbaca.');
       }
-      final backupSource = utf8.decode(bytes, allowMalformed: false);
-      await _archiveInputFile(
-        result.files.single.name,
-        bytes,
-        'backup_restore',
-      );
-      final decodedBackup = jsonDecode(backupSource);
-      final restored = FinanceData.fromBackup(backupSource);
+      final SqliteBackupContents? sqliteBackup = _isSqliteDatabase(bytes)
+          ? await FinanceSqliteStore.readBackupBytes(bytes)
+          : null;
+      final FinanceData restored;
+      final List<ArchivedFile> restoredFiles;
+      if (sqliteBackup != null) {
+        restored = sqliteBackup.data;
+        restoredFiles = sqliteBackup.files;
+      } else {
+        final backupSource = utf8.decode(bytes, allowMalformed: false);
+        final decodedBackup = jsonDecode(backupSource);
+        restored = FinanceData.fromBackup(backupSource);
+        restoredFiles = _archivedFilesFromBackup(decodedBackup);
+        await _archiveLegacyJsonBackup(result.files.single.name, bytes);
+      }
       await _hydrateApplicationImages(restored);
-      final restoredFiles = _archivedFilesFromBackup(decodedBackup);
       if (!mounted) return;
       setState(() {
         _data = restored;
@@ -3673,6 +3749,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
         return;
       }
     }
+    try {
+      await FinanceSqliteStore.instance.clearData();
+      await _persistSelectedMonth(_month);
+    } catch (error) {
+      _message('Data gagal dihapus: $error', isError: true);
+      return;
+    }
     setState(() {
       _data = FinanceData();
       _selectedProductId = null;
@@ -3681,7 +3764,6 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       _productImageSources.clear();
       _productImageProviders.clear();
     });
-    if (!await _save()) return;
     _message('Semua data telah dihapus.');
   }
 
@@ -6321,8 +6403,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                             colors: [
-                              Colors.white.withValues(alpha: .3),
-                              const Color(0xffd8edf4).withValues(alpha: .3),
+                              Colors.white.withValues(
+                                alpha: Platform.isAndroid ? .82 : .3,
+                              ),
+                              const Color(
+                                0xffd8edf4,
+                              ).withValues(alpha: Platform.isAndroid ? .8 : .3),
                             ],
                           ),
                           border: Border.all(
@@ -6692,7 +6778,39 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     );
   }
 
-  Widget _pageTitle(String title, TextStyle style) {
+  Widget _pageTitle(String title, TextStyle style, {bool pill = true}) {
+    if (!pill) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(99),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withValues(alpha: .72),
+              const Color(0xffdcecf6).withValues(alpha: .62),
+            ],
+          ),
+          border: Border.all(color: Colors.white.withValues(alpha: .65)),
+          boxShadow: [
+            BoxShadow(
+              color: _ink.withValues(alpha: .08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: AppText(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: style.copyWith(fontSize: 23),
+        ),
+      );
+    }
     return Align(
       alignment: Alignment.centerLeft,
       widthFactor: 1,
@@ -6723,6 +6841,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     Widget? action,
     bool monthStepper = false,
     bool showLowStockWarning = false,
+    bool plainTitle = false,
   }) => _isDesktop
       ? const SizedBox.shrink()
       : LayoutBuilder(
@@ -6735,6 +6854,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                 fontWeight: FontWeight.w700,
                 letterSpacing: -.6,
               ),
+              pill: !plainTitle,
             );
             final controls = Wrap(
               alignment: WrapAlignment.end,
@@ -6914,6 +7034,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           'Ringkasan Bulanan',
           monthStepper: true,
           showLowStockWarning: true,
+          plainTitle: Platform.isAndroid,
         ),
         _kpiGrid([
           _Kpi(
@@ -9275,11 +9396,24 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   Widget _productDetails(List<Product> products, Product? selected) =>
       LayoutBuilder(
         builder: (context, constraints) {
-          final productList = _productPicker(products, selected);
+          final query = _productSearchController.text.trim().toLowerCase();
+          final shownProducts = query.isEmpty
+              ? products
+              : products
+                    .where(
+                      (product) => product.name.toLowerCase().contains(query),
+                    )
+                    .toList();
+          final productList = _productPicker(
+            shownProducts,
+            selected,
+            searching: query.isNotEmpty,
+          );
           final productListFill = _productPicker(
-            products,
+            shownProducts,
             selected,
             fill: true,
+            searching: query.isNotEmpty,
           );
           final productEditor = selected == null
               ? _emptyProductEditor()
@@ -9308,24 +9442,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Row(
-                                children: [
-                                  _LiquidIconBadge(
-                                    icon: Icons.list_alt_outlined,
-                                    size: 29,
-                                    iconSize: 17,
-                                  ),
-                                  SizedBox(width: 9),
-                                  AppText(
-                                    'List produk',
-                                    style: TextStyle(
-                                      color: _ink,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              _productListHeader(),
                               const SizedBox(height: 22),
                               productList,
                             ],
@@ -9417,24 +9534,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Row(
-                                children: [
-                                  _LiquidIconBadge(
-                                    icon: Icons.list_alt_outlined,
-                                    size: 29,
-                                    iconSize: 17,
-                                  ),
-                                  SizedBox(width: 9),
-                                  AppText(
-                                    'List produk',
-                                    style: TextStyle(
-                                      color: _ink,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              _productListHeader(),
                               const SizedBox(height: 22),
                               Expanded(child: productListFill),
                             ],
@@ -9470,11 +9570,113 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
         },
       );
 
+  Widget _productListHeader() {
+    if (_productSearchOpen) {
+      return Container(
+        height: 36,
+        padding: const EdgeInsets.only(left: 10, right: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: .55),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: _ink.withValues(alpha: .12)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.search_rounded,
+              size: 17,
+              color: _ink.withValues(alpha: .6),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: TextField(
+                controller: _productSearchController,
+                autofocus: true,
+                cursorColor: _ink,
+                style: const TextStyle(color: _ink, fontSize: 13),
+                decoration: InputDecoration(
+                  isCollapsed: true,
+                  filled: false,
+                  hintText: localizeAppText('Cari produk'),
+                  hintStyle: TextStyle(color: _ink.withValues(alpha: .45)),
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                ),
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
+            InkResponse(
+              radius: 14,
+              onTap: () => setState(() {
+                _productSearchOpen = false;
+                _productSearchController.clear();
+              }),
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(Icons.close_rounded, size: 16, color: _ink),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return SizedBox(
+      height: 36,
+      child: Row(
+        children: [
+          const _LiquidIconBadge(
+            icon: Icons.list_alt_outlined,
+            size: 29,
+            iconSize: 17,
+          ),
+          const SizedBox(width: 9),
+          const Expanded(
+            child: AppText(
+              'List produk',
+              style: TextStyle(
+                color: _ink,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Tooltip(
+            message: localizeAppText('Cari produk'),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _productSearchOpen = true),
+              child: const MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: _LiquidIconBadge(
+                  icon: Icons.search_rounded,
+                  size: 29,
+                  iconSize: 17,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _productPicker(
     List<Product> products,
     Product? selected, {
     bool fill = false,
+    bool searching = false,
   }) {
+    if (products.isEmpty && searching) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 14),
+        child: _EmptyState(
+          centerTitle: true,
+          title: 'Produk tidak ditemukan',
+          detail: 'Coba kata kunci lain.',
+        ),
+      );
+    }
     if (products.isEmpty) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 14),
@@ -10543,12 +10745,34 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                       ),
                     ),
                     const SizedBox(height: 3),
-                    AppText(
-                      item.detail,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: _muted, fontSize: 12),
-                    ),
+                    if (Platform.isAndroid)
+                      // Reserve two lines so every card matches the tallest
+                      // ("Total pengeluaran") on Android.
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          minHeight: (TextPainter(
+                            text: const TextSpan(
+                              text: 'A\nA',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            textDirection: TextDirection.ltr,
+                            textScaler: MediaQuery.textScalerOf(context),
+                          )..layout()).height,
+                        ),
+                        child: AppText(
+                          item.detail,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: _muted, fontSize: 12),
+                        ),
+                      )
+                    else
+                      AppText(
+                        item.detail,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _muted, fontSize: 12),
+                      ),
                   ],
                 ),
               ),

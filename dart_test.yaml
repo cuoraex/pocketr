@@ -1,0 +1,3 @@
+tags:
+  readme-screenshots:
+    skip: "Menimpa screenshots/. Jalankan: flutter test --tags readme-screenshots --run-skipped test/readme_screenshots_test.dart"

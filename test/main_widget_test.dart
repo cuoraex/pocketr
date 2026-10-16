@@ -1,20 +1,53 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:excel/excel.dart' as xlsx;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:pocketr/app_localization.dart';
 import 'package:pocketr/data.dart';
+import 'package:pocketr/finance_database.dart';
+import 'package:pocketr/local_file_archive.dart';
 import 'package:pocketr/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 const _windowManagerChannel = MethodChannel('window_manager');
 const _windowStateChannel = MethodChannel('pocketr/window_state');
 
+Uint8List _workbookBytes(List<String> headers) {
+  final workbook = xlsx.Excel.createExcel();
+  workbook.tables.values.first.appendRow(
+    headers.map(xlsx.TextCellValue.new).toList(),
+  );
+  return Uint8List.fromList(workbook.encode()!);
+}
+
+Future<void> _pumpUi(WidgetTester tester) async {
+  for (var frame = 0; frame < 12; frame++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump(const Duration(milliseconds: 250));
+  }
+  await tester.pump();
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory databaseDirectory;
 
-  setUp(() {
+  setUp(() async {
+    databaseDirectory = await Directory.systemTemp.createTemp(
+      'pocketr-widget-database-',
+    );
+    FinanceSqliteStore.instance = FinanceSqliteStore.withDirectory(
+      databaseDirectory,
+    );
+    LocalFileArchive.instance = LocalFileArchive.inMemory();
     SharedPreferences.setMockInitialValues({});
     appLanguageCode.value = 'id';
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -22,12 +55,27 @@ void main() {
           if (call.method == 'isMaximized') return false;
           return null;
         });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowStateChannel, (call) async {
+          if (call.method == 'dismissDialogOnOutsideClick') return true;
+          return null;
+        });
   });
 
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_windowManagerChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowStateChannel, null);
     appLanguageCode.value = 'id';
+  });
+
+  tearDown(() async {
+    await FinanceSqliteStore.instance.close();
+    await databaseDirectory.delete(recursive: true);
+    await LocalFileArchive.instance.close();
+    FinanceSqliteStore.instance = FinanceSqliteStore();
+    LocalFileArchive.instance = LocalFileArchive();
   });
 
   Future<void> pumpFinanceHome(
@@ -43,7 +91,7 @@ void main() {
           ? const PocketRApp()
           : const MaterialApp(home: FinanceHome()),
     );
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
   }
 
   testWidgets('desktop navigation opens each primary section', (tester) async {
@@ -59,22 +107,22 @@ void main() {
     expect(find.text('Ringkasan Bulanan'), findsOneWidget);
 
     await tester.tap(find.text('Penjualan').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(tester.takeException(), isNull, reason: 'sales page layout');
     expect(find.text('Impor Penjualan'), findsOneWidget);
 
     await tester.tap(find.text('Pengeluaran').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(tester.takeException(), isNull, reason: 'expenses page layout');
     expect(find.text('Pengeluaran').last, findsOneWidget);
 
     await tester.tap(find.text('Produk dan HPP').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(tester.takeException(), isNull, reason: 'products page layout');
     expect(find.text('Produk dan HPP').last, findsOneWidget);
 
     await tester.tap(find.text('Ringkasan').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(tester.takeException(), isNull, reason: 'return to summary layout');
     expect(find.text('Ringkasan Bulanan'), findsOneWidget);
   });
@@ -115,6 +163,16 @@ void main() {
     await preferences.setString('pocketr_selected_month_v1', '2026-02');
     await pumpFinanceHome(tester);
 
+    expect(preferences.getString('pocketr_v1'), isNull);
+    expect((await FinanceSqliteStore.instance.load())?.sales, hasLength(2));
+    final legacyArchive = File(
+      p.join(
+        (await FinanceSqliteStore.instance.supportDirectory()).path,
+        'legacy_backup',
+        'pocketr_v1.json',
+      ),
+    );
+    expect(legacyArchive.readAsStringSync(), data.toBackup());
     final annualNet = data.summary('2026-01').net + data.summary('2026-02').net;
     expect(find.text('Laba tahunan · 2026'), findsOneWidget);
     expect(
@@ -133,9 +191,9 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Penjualan').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Impor Penjualan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     expect(find.text('Template input manual'), findsOneWidget);
     expect(find.text('Impor Excel'), findsOneWidget);
@@ -143,37 +201,50 @@ void main() {
   });
 
   testWidgets('Shopee import starts after selecting two files', (tester) async {
+    final orderWorkbook = _workbookBytes([
+      'No. Pesanan',
+      'Status Pesanan',
+      'Jumlah',
+      'Subtotal Pesanan',
+    ]);
+    final balanceWorkbook = _workbookBytes([
+      'Tipe Transaksi',
+      'No. Pesanan',
+      'Jenis Transaksi',
+      'Jumlah',
+      'Status',
+    ]);
     FilePicker.platform = _FixedFilePicker.withFiles([
       PlatformFile(
         name: 'orders.xlsx',
-        size: 3,
-        bytes: Uint8List.fromList([1]),
+        size: orderWorkbook.length,
+        bytes: orderWorkbook,
       ),
       PlatformFile(
         name: 'balance.xlsx',
-        size: 3,
-        bytes: Uint8List.fromList([2]),
+        size: balanceWorkbook.length,
+        bytes: balanceWorkbook,
       ),
     ]);
     addTearDown(() => FilePicker.platform = _FixedFilePicker(null));
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Penjualan').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Impor Penjualan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     expect(find.text('Batal'), findsNothing);
     expect(find.text('Impor'), findsNothing);
     await tester.tap(find.byIcon(Icons.close).last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Impor penjualan dari Excel'), findsNothing);
     expect(tester.takeException(), isNull);
 
     await tester.tap(find.text('Impor Penjualan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Pilih 2 berkas'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     expect(find.text('Impor penjualan dari Excel'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -232,16 +303,16 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Penjualan').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Impor Penjualan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Impor Excel'));
     await tester.pump();
     expect(find.text('Membaca berkas Excel...'), findsNothing);
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(seconds: 1)),
     );
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     expect(find.text('2 baris penjualan'), findsOneWidget);
     expect(find.text('Produk baru'), findsOneWidget);
@@ -259,12 +330,10 @@ void main() {
       reason: 'manual import confirmation layout',
     );
     await tester.tap(find.text('Impor').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Impor penjualan dari Excel'), findsNothing);
 
-    final savedData = FinanceData.fromBackup(
-      preferences.getString('pocketr_v1')!,
-    );
+    final savedData = (await FinanceSqliteStore.instance.load())!;
     expect(savedData.products, hasLength(3));
     expect(
       savedData.products.map((product) => product.id).toSet(),
@@ -295,16 +364,16 @@ void main() {
     );
 
     await tester.tap(find.text('Produk dan HPP').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Audit bag'), findsNWidgets(2));
     await tester.tap(find.text('Keep product').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Keep product'), findsNWidgets(2));
     await tester.tap(find.text('Audit pouch').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Audit pouch'), findsNWidgets(2));
     await tester.tap(find.text('Audit bag').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Audit bag'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
   });
@@ -320,22 +389,21 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Pengaturan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Peringatan'), findsOneWidget);
     expect(find.text('Restore Settings'), findsOneWidget);
     expect(find.text('Backup Settings'), findsOneWidget);
 
-    await tester.tap(find.text('Atur ulang semua data'));
-    await tester.pumpAndSettle();
+    final resetButton = find.text('Atur ulang semua data');
+    await tester.ensureVisible(resetButton);
+    await tester.tap(resetButton);
+    await _pumpUi(tester);
     expect(find.text('Hapus semua data?'), findsOneWidget);
 
     await tester.tap(find.text('Batal'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Hapus semua data?'), findsNothing);
-    expect(
-      FinanceData.fromBackup(preferences.getString('pocketr_v1')!).products,
-      hasLength(1),
-    );
+    expect((await FinanceSqliteStore.instance.load())!.products, hasLength(1));
   });
 
   testWidgets('Restore Settings opens the backup file picker', (tester) async {
@@ -354,7 +422,7 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Pengaturan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     expect(find.text('Restore Settings'), findsOneWidget);
     expect(find.text('Backup Settings'), findsOneWidget);
     final buttonsAlignment = find
@@ -375,9 +443,63 @@ void main() {
     );
 
     await tester.tap(find.text('Restore Settings'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     expect(picker.pickFilesRequested, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('restores legacy JSON and archives it outside SQLite', (
+    tester,
+  ) async {
+    final data = FinanceData(
+      products: [Product(id: 'legacy-product', name: 'Legacy bag')],
+      sales: [
+        Sale(
+          id: 'legacy-sale',
+          date: '2026-10-16',
+          platform: 'shopee',
+          productId: 'legacy-product',
+          productName: 'Legacy bag',
+          received: 50000,
+        ),
+      ],
+    );
+    final backupBytes = Uint8List.fromList(utf8.encode(data.toBackup()));
+    FilePicker.platform = _FixedFilePicker.withFiles([
+      PlatformFile(
+        name: 'legacy-backup.json',
+        size: backupBytes.length,
+        bytes: backupBytes,
+      ),
+    ]);
+    addTearDown(() => FilePicker.platform = _FixedFilePicker(null));
+    await pumpFinanceHome(tester);
+
+    await tester.tap(find.text('Pengaturan').last);
+    await _pumpUi(tester);
+    await tester.tap(find.text('Restore Settings'));
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await _pumpUi(tester);
+
+    final restored = await FinanceSqliteStore.instance.load();
+    expect(restored?.products.single.name, 'Legacy bag');
+    expect(restored?.sales.single.received, 50000);
+    expect(
+      await tester.runAsync(() => LocalFileArchive.instance.listFiles()),
+      isEmpty,
+    );
+    final legacyFiles = Directory(
+      p.join(
+        (await FinanceSqliteStore.instance.supportDirectory()).path,
+        'legacy_backup',
+      ),
+    ).listSync();
+    expect(legacyFiles, hasLength(1));
+    expect(File(legacyFiles.single.path).readAsBytesSync(), backupBytes);
     expect(tester.takeException(), isNull);
   });
 
@@ -399,9 +521,9 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Pengaturan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Backup Settings'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     expect(picker.saveFileRequested, isTrue);
     expect(picker.saveFileBytes, isNull);
@@ -426,9 +548,9 @@ void main() {
     await pumpFinanceHome(tester, includeAppNotificationLayer: true);
 
     await tester.tap(find.text('Pengaturan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Pilih folder'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
     final notificationFinder = find.textContaining(
       'Direktori auto-save gagal dipilih',
@@ -453,33 +575,60 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Pengaturan').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Atur ulang semua data'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
+    final resetButton = find.text('Atur ulang semua data');
+    await tester.ensureVisible(resetButton);
+    await tester.tap(resetButton);
+    await _pumpUi(tester);
     await tester.tap(find.text('Hapus'));
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
-    expect(
-      FinanceData.fromBackup(preferences.getString('pocketr_v1')!).products,
-      isEmpty,
+    expect(await FinanceSqliteStore.instance.load(), isNull);
+    await FinanceSqliteStore.instance.close();
+    final database = sqlite3.open(
+      p.join(databaseDirectory.path, 'pocketr.db'),
+      mode: OpenMode.readOnly,
     );
+    try {
+      for (final table in [
+        'app_settings',
+        'products',
+        'product_materials',
+        'product_attributes',
+        'stock_entries',
+        'materials',
+        'sales',
+        'expenses',
+        'owners',
+        'paid',
+        'shopee_product_mappings',
+        'archived_files',
+      ]) {
+        expect(
+          database
+              .select('SELECT COUNT(*) AS count FROM $table')
+              .single['count'],
+          0,
+          reason: '$table should be empty after reset',
+        );
+      }
+    } finally {
+      database.close();
+    }
   });
 
   testWidgets('new product is saved to local storage', (tester) async {
-    final preferences = await SharedPreferences.getInstance();
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Produk dan HPP').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Tambah produk').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.enterText(find.byType(TextFormField).first, 'Audit product');
     await tester.tap(find.text('Simpan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
-    final savedData = FinanceData.fromBackup(
-      preferences.getString('pocketr_v1')!,
-    );
+    final savedData = (await FinanceSqliteStore.instance.load())!;
     expect(savedData.products.map((product) => product.name), [
       'Audit product',
     ]);
@@ -498,37 +647,32 @@ void main() {
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Penjualan').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Tambah penjualan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.enterText(find.byType(TextFormField).at(1), '25000');
     await tester.tap(find.text('Simpan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
-    final savedData = FinanceData.fromBackup(
-      preferences.getString('pocketr_v1')!,
-    );
+    final savedData = (await FinanceSqliteStore.instance.load())!;
     expect(savedData.sales, hasLength(1));
     expect(savedData.sales.single.productId, 'audit-product');
     expect(savedData.sales.single.received, 25000);
   });
 
   testWidgets('new operating expense is saved locally', (tester) async {
-    final preferences = await SharedPreferences.getInstance();
     await pumpFinanceHome(tester);
 
     await tester.tap(find.text('Pengeluaran').first);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.tap(find.text('Tambah biaya').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
     await tester.enterText(find.byType(TextFormField).first, 'Packaging');
     await tester.enterText(find.byType(TextFormField).at(1), '5000');
     await tester.tap(find.text('Simpan').last);
-    await tester.pumpAndSettle();
+    await _pumpUi(tester);
 
-    final savedData = FinanceData.fromBackup(
-      preferences.getString('pocketr_v1')!,
-    );
+    final savedData = (await FinanceSqliteStore.instance.load())!;
     expect(savedData.expenses, hasLength(1));
     expect(savedData.expenses.single.name, 'Packaging');
     expect(savedData.expenses.single.amount, 5000);

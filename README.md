@@ -4,8 +4,14 @@ PocketR adalah aplikasi pencatatan keuangan usaha berbasis Flutter. Aplikasi
 membantu mengelola penjualan, biaya, produk, HPP, stok, dan pembagian laba
 dalam satu tempat. Data disimpan secara lokal di perangkat.
 
-[![Release v1.2](https://img.shields.io/badge/Release-v1.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2)
+[![Release v1.2.2](https://img.shields.io/badge/Release-v1.2.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2.2)
 [![Downloads](https://img.shields.io/github/downloads/cuoraex/pocketr/total?style=for-the-badge&label=Downloads&cacheSeconds=300)](https://github.com/cuoraex/pocketr/releases/latest)
+
+## Tautan
+
+- GitHub: <https://github.com/cuoraex/pocketr>
+- Profil Cuoraex: <https://github.com/cuoraex>
+- Donasi via Tako: <https://tako.id/Cuoraex>
 
 ## Fitur
 
@@ -88,16 +94,18 @@ Versi pada screenshot halaman Tentang dapat berbeda dari versi aplikasi saat ini
 
 ## Backup dan pemulihan
 
-- Data utama tersimpan otomatis di perangkat.
+- Data utama tersimpan otomatis di database SQLite lokal perangkat.
 - **Backup Settings** di Pengaturan membuat backup lengkap yang mencakup data,
   foto profil dan produk, serta berkas impor yang tersimpan di arsip aplikasi.
-- Backup reguler dan auto-save lokal memakai file `.pcktr`; file auto-save
-  bernama `pocketr-autosave.pcktr` dan ditimpa pada setiap interval yang dipilih.
-  Auto-save tidak menyertakan foto.
+- Backup reguler memakai file SQLite `.pcktr` dengan nama bertimestamp. Tujuh
+  versi terbaru dipertahankan. Auto-save hanya memakai satu file
+  `pocketr-autosave.pcktr` yang ditimpa pada setiap interval dan tidak
+  menyertakan foto.
 - Tombol **Restore Settings** di Pengaturan atau menu **Buka Berkas** dapat
-  digunakan untuk memulihkan backup dari file `.pcktr` atau `.json`.
-- Backup JSON dari aplikasi PocketR juga dapat dipulihkan melalui alur
-  tersebut.
+  digunakan untuk memulihkan backup dari file `.pcktr`, `.db`, atau `.json`.
+- Data JSON lama di penyimpanan aplikasi otomatis dimigrasikan ke SQLite saat
+  aplikasi dibuka. File backup JSON PocketR lama tetap dapat dibuka; backup
+  baru disimpan sebagai SQLite.
 
 ## Bahasa dan aplikasi
 
@@ -105,9 +113,3 @@ Antarmuka tersedia dalam Bahasa Indonesia dan English. Pengaturan bahasa
 disimpan di perangkat. Pada halaman **Tentang**, tautan sosial Cuoraex dan
 repositori GitHub tersedia; **Check for update** membuka repositori untuk
 melihat informasi versi terbaru.
-
-## Tautan
-
-- GitHub: <https://github.com/cuoraex/pocketr>
-- Profil Cuoraex: <https://github.com/cuoraex>
-- Donasi via Tako: <https://tako.id/Cuoraex>

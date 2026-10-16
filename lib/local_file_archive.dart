@@ -67,7 +67,13 @@ class LocalFileArchive {
 
   LocalFileArchive.withDirectory(Directory directory) : _directory = directory;
 
-  static final instance = LocalFileArchive();
+  LocalFileArchive.inMemory() : _directory = null {
+    final database = sqlite3.openInMemory();
+    _createTables(database);
+    _opening = Future.value(database);
+  }
+
+  static LocalFileArchive instance = LocalFileArchive();
 
   final Directory? _directory;
   Future<Database>? _opening;
@@ -218,6 +224,11 @@ class LocalFileArchive {
       await legacyDatabase.rename(databasePath);
     }
     final database = sqlite3.open(databasePath);
+    _createTables(database);
+    return database;
+  }
+
+  void _createTables(Database database) {
     database.execute('''
       CREATE TABLE IF NOT EXISTS imported_files (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,7 +242,6 @@ class LocalFileArchive {
       )
       ''');
     _ensureApplicationImagesTable(database);
-    return database;
   }
 
   void _ensureApplicationImagesTable(Database database) {
