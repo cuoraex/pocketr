@@ -108,28 +108,6 @@ disimpan di perangkat. Pada halaman **Tentang**, tautan sosial Cuoraex dan
 repositori GitHub tersedia; **Check for update** membuka repositori untuk
 melihat informasi versi terbaru.
 
-## Menjalankan dari sumber
-
-Pastikan Flutter SDK sudah terpasang, lalu jalankan:
-
-```shell
-flutter pub get
-flutter run
-```
-
-Untuk menjalankan aplikasi pada Windows:
-
-```shell
-flutter run -d windows
-```
-
-## Validasi
-
-```shell
-flutter analyze
-flutter test
-```
-
 ## Tautan
 
 - GitHub: <https://github.com/cuoraex/pocketr>
