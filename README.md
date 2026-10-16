@@ -4,8 +4,6 @@ PocketR adalah aplikasi pencatatan keuangan usaha berbasis Flutter. Aplikasi
 membantu mengelola penjualan, biaya, produk, HPP, stok, dan pembagian laba
 dalam satu tempat. Data disimpan secara lokal di perangkat.
 
-Versi yang ditampilkan di aplikasi: **v1.2**.
-
 [![Release v1.2](https://img.shields.io/badge/Release-v1.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2)
 [![Downloads](https://img.shields.io/github/downloads/cuoraex/pocketr/total?style=for-the-badge&label=Downloads)](https://github.com/cuoraex/pocketr/releases/latest)
 
@@ -96,9 +94,9 @@ Versi pada screenshot halaman Tentang dapat berbeda dari versi aplikasi saat ini
 - Backup reguler dan auto-save lokal memakai file `.pcktr`; file auto-save
   bernama `pocketr-autosave.pcktr` dan ditimpa pada setiap interval yang dipilih.
   Auto-save tidak menyertakan foto.
-- Untuk memulihkan backup, gunakan menu **Pulihkan dari cadangan** dan pilih
+- Untuk memulihkan backup, gunakan menu **Buka Berkas** dan pilih
   file `.pcktr` atau `.json`.
-- Backup JSON dari aplikasi HTML PocketR juga dapat dipulihkan melalui alur
+- Backup JSON dari aplikasi PocketR juga dapat dipulihkan melalui alur
   tersebut.
 
 ## Bahasa dan aplikasi
