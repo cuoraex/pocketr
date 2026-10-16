@@ -4,7 +4,7 @@ PocketR adalah aplikasi pencatatan keuangan usaha berbasis Flutter. Aplikasi
 membantu mengelola penjualan, biaya, produk, HPP, stok, dan pembagian laba
 dalam satu tempat. Data disimpan secara lokal di perangkat.
 
-[![Release v1.2.2](https://img.shields.io/badge/Release-v1.2.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2.2)
+[![Release v1.2](https://img.shields.io/badge/Release-v1.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2)
 [![Downloads](https://img.shields.io/github/downloads/cuoraex/pocketr/total?style=for-the-badge&label=Downloads&cacheSeconds=300)](https://github.com/cuoraex/pocketr/releases/latest)
 
 ## Tautan
