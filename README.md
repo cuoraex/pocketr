@@ -56,8 +56,8 @@ dalam satu tempat. Data disimpan secara lokal di perangkat.
   zakat. Rincian iklan dapat mencatat platform, produk terkait, dan PPN.
 - **Produk dan HPP** — menampilkan katalog produk, varian, bahan baku, ongkos,
   perhitungan HPP, dan informasi stok.
-- **Pengaturan** — mengatur bahasa dan auto-save lokal, membuat backup lengkap
-  termasuk foto, atau mengatur ulang data.
+- **Pengaturan** — mengatur bahasa dan auto-save lokal, membuat atau memulihkan
+  backup lengkap termasuk foto, atau mengatur ulang data.
 - **Tentang** — merangkum fitur aplikasi, menampilkan versi, serta menyediakan
   tautan profil sosial dan repositori GitHub untuk melihat pembaruan.
 
@@ -94,8 +94,8 @@ Versi pada screenshot halaman Tentang dapat berbeda dari versi aplikasi saat ini
 - Backup reguler dan auto-save lokal memakai file `.pcktr`; file auto-save
   bernama `pocketr-autosave.pcktr` dan ditimpa pada setiap interval yang dipilih.
   Auto-save tidak menyertakan foto.
-- Untuk memulihkan backup, gunakan menu **Buka Berkas** dan pilih
-  file `.pcktr` atau `.json`.
+- Tombol **Restore Settings** di Pengaturan atau menu **Buka Berkas** dapat
+  digunakan untuk memulihkan backup dari file `.pcktr` atau `.json`.
 - Backup JSON dari aplikasi PocketR juga dapat dipulihkan melalui alur
   tersebut.
 

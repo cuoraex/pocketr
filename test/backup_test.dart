@@ -1,13 +1,28 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketr/backup.dart';
 import 'package:pocketr/data.dart';
 import 'package:pocketr/local_file_archive.dart';
 
 void main() {
-  test('full backup includes all data, photos, and archived files', () {
+  test('backup file extension defaults to pcktr', () {
+    expect(
+      ensureBackupFileExtension(r'C:\backups\my-backup'),
+      r'C:\backups\my-backup.pcktr',
+    );
+    expect(
+      ensureBackupFileExtension(r'C:\backups\my-backup.pcktr'),
+      r'C:\backups\my-backup.pcktr',
+    );
+    expect(
+      ensureBackupFileExtension(r'C:\backups\my-backup.JSON'),
+      r'C:\backups\my-backup.JSON',
+    );
+  });
+
+  test('full backup includes all data, photos, and archived files', () async {
     final data = FinanceData(
       logo: 'data:image/png;base64,bG9nbw==',
       products: [Product(name: 'Tas', img: 'data:image/jpeg;base64,cGhvdG8=')],
@@ -26,7 +41,12 @@ void main() {
     ];
 
     final backup = jsonDecode(
-      utf8.decode(createFullBackupBytes(data, files)),
+      utf8.decode(
+        await compute(
+          createFullBackupBytesFromPayload,
+          createFullBackupPayload(data, files),
+        ),
+      ),
     ) as Map<String, dynamic>;
 
     expect(backup['format'], 'pocketr-backup');

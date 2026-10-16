@@ -9,6 +9,7 @@ import 'package:pocketr/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _windowManagerChannel = MethodChannel('window_manager');
+const _windowStateChannel = MethodChannel('pocketr/window_state');
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -29,18 +30,31 @@ void main() {
     appLanguageCode.value = 'id';
   });
 
-  Future<void> pumpFinanceHome(WidgetTester tester) async {
+  Future<void> pumpFinanceHome(
+    WidgetTester tester, {
+    bool includeAppNotificationLayer = false,
+  }) async {
     tester.view
       ..physicalSize = const Size(1440, 900)
       ..devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
-    await tester.pumpWidget(const MaterialApp(home: FinanceHome()));
+    await tester.pumpWidget(
+      includeAppNotificationLayer
+          ? const PocketRApp()
+          : const MaterialApp(home: FinanceHome()),
+    );
     await tester.pumpAndSettle();
   }
 
   testWidgets('desktop navigation opens each primary section', (tester) async {
     await pumpFinanceHome(tester);
     expect(tester.takeException(), isNull, reason: 'initial summary layout');
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is Image && widget.image is MemoryImage,
+      ),
+      findsOneWidget,
+    );
 
     expect(find.text('Ringkasan Bulanan'), findsOneWidget);
 
@@ -308,6 +322,8 @@ void main() {
     await tester.tap(find.text('Pengaturan').last);
     await tester.pumpAndSettle();
     expect(find.text('Peringatan'), findsOneWidget);
+    expect(find.text('Restore Settings'), findsOneWidget);
+    expect(find.text('Backup Settings'), findsOneWidget);
 
     await tester.tap(find.text('Atur ulang semua data'));
     await tester.pumpAndSettle();
@@ -320,6 +336,110 @@ void main() {
       FinanceData.fromBackup(preferences.getString('pocketr_v1')!).products,
       hasLength(1),
     );
+  });
+
+  testWidgets('Restore Settings opens the backup file picker', (tester) async {
+    final picker = _FixedFilePicker(null);
+    FilePicker.platform = picker;
+    addTearDown(() => FilePicker.platform = _FixedFilePicker(null));
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowStateChannel, (call) async {
+          if (call.method == 'dismissDialogOnOutsideClick') return true;
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowStateChannel, null),
+    );
+    await pumpFinanceHome(tester);
+
+    await tester.tap(find.text('Pengaturan').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Restore Settings'), findsOneWidget);
+    expect(find.text('Backup Settings'), findsOneWidget);
+    final buttonsAlignment = find
+        .ancestor(
+          of: find.text('Backup Settings'),
+          matching: find.byType(Align),
+        )
+        .first;
+    final backupButton = find
+        .ancestor(
+          of: find.text('Backup Settings'),
+          matching: find.byType(InkWell),
+        )
+        .first;
+    expect(
+      tester.getRect(backupButton).right,
+      closeTo(tester.getRect(buttonsAlignment).right, 0.5),
+    );
+
+    await tester.tap(find.text('Restore Settings'));
+    await tester.pumpAndSettle();
+
+    expect(picker.pickFilesRequested, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Backup Settings opens the save dialog before preparing data', (
+    tester,
+  ) async {
+    final picker = _FixedFilePicker(null);
+    FilePicker.platform = picker;
+    addTearDown(() => FilePicker.platform = _FixedFilePicker(null));
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowStateChannel, (call) async {
+          if (call.method == 'dismissDialogOnOutsideClick') return true;
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowStateChannel, null),
+    );
+    await pumpFinanceHome(tester);
+
+    await tester.tap(find.text('Pengaturan').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Backup Settings'));
+    await tester.pumpAndSettle();
+
+    expect(picker.saveFileRequested, isTrue);
+    expect(picker.saveFileBytes, isNull);
+    expect(find.text('Pengaturan').last, findsOneWidget);
+    expect(find.text('Restore Settings'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('notifications render over the settings dialog', (tester) async {
+    final picker = _FixedFilePicker(null)..directoryPickerShouldThrow = true;
+    FilePicker.platform = picker;
+    addTearDown(() => FilePicker.platform = _FixedFilePicker(null));
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowStateChannel, (call) async {
+          if (call.method == 'dismissDialogOnOutsideClick') return true;
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowStateChannel, null),
+    );
+    await pumpFinanceHome(tester, includeAppNotificationLayer: true);
+
+    await tester.tap(find.text('Pengaturan').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Pilih folder'));
+    await tester.pumpAndSettle();
+
+    final notificationFinder = find.textContaining(
+      'Direktori auto-save gagal dipilih',
+    );
+    expect(notificationFinder, findsOneWidget);
+    final notificationText = tester.widget<Text>(notificationFinder);
+    expect(notificationText.style?.fontSize, 13);
+    expect(notificationText.style?.decoration, TextDecoration.none);
+    expect(tester.getRect(notificationFinder).height, lessThan(80));
+    expect(find.text('Restore Settings'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('confirmed reset clears and persists finance data', (
@@ -432,6 +552,10 @@ class _FixedFilePicker extends FilePicker {
     : _result = FilePickerResult(files);
 
   final FilePickerResult? _result;
+  bool pickFilesRequested = false;
+  bool saveFileRequested = false;
+  bool directoryPickerShouldThrow = false;
+  Uint8List? saveFileBytes;
 
   @override
   Future<FilePickerResult?> pickFiles({
@@ -447,5 +571,35 @@ class _FixedFilePicker extends FilePicker {
     bool withReadStream = false,
     bool lockParentWindow = false,
     bool readSequential = false,
-  }) async => _result;
+  }) async {
+    pickFilesRequested = true;
+    return _result;
+  }
+
+  @override
+  Future<String?> saveFile({
+    String? dialogTitle,
+    String? fileName,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Uint8List? bytes,
+    bool lockParentWindow = false,
+  }) async {
+    saveFileRequested = true;
+    saveFileBytes = bytes;
+    return null;
+  }
+
+  @override
+  Future<String?> getDirectoryPath({
+    String? dialogTitle,
+    bool lockParentWindow = false,
+    String? initialDirectory,
+  }) async {
+    if (directoryPickerShouldThrow) {
+      throw StateError('Test directory picker failure');
+    }
+    return null;
+  }
 }

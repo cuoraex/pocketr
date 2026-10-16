@@ -47,9 +47,44 @@ const _slideUpDistance = 10.0;
 const _slideUpCurve = Curves.easeOutCubic;
 const _slideUpStaggerMilliseconds = 40;
 const _slideUpMaxStaggerRows = 5;
-const _defaultBrandImage = AssetImage('assets/images/pocketr_default.png');
 final _windowTransitionInProgress = ValueNotifier<bool>(false);
+final _appNotification = ValueNotifier<_AppNotification?>(null);
+final Future<Uint8List> _defaultBrandImageBytes = _loadDefaultBrandImageBytes();
 const _windowStateChannel = MethodChannel('pocketr/window_state');
+
+Future<Uint8List> _loadDefaultBrandImageBytes() async {
+  try {
+    final data = await rootBundle.load('assets/images/pocketr_default.png');
+    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+  } catch (error, stackTrace) {
+    debugPrint('Could not load the default profile image: $error\n$stackTrace');
+    rethrow;
+  }
+}
+
+class _AppNotification {
+  const _AppNotification({
+    required this.message,
+    required this.isError,
+    required this.width,
+  });
+
+  final String message;
+  final bool isError;
+  final double? width;
+}
+
+class _BackupProgressStatus {
+  const _BackupProgressStatus({
+    this.message = '',
+    this.isError = false,
+    this.isLoading = false,
+  });
+
+  final String message;
+  final bool isError;
+  final bool isLoading;
+}
 
 Future<T> _withOutsideDismissedPicker<T>(
   Future<T> Function() showPicker,
@@ -165,7 +200,7 @@ class PocketRApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       builder: (context, child) => TooltipVisibility(
         visible: false,
-        child: child ?? const SizedBox.shrink(),
+        child: _AppNotificationLayer(child: child ?? const SizedBox.shrink()),
       ),
       theme: ThemeData(
         useMaterial3: true,
@@ -266,6 +301,72 @@ class PocketRApp extends StatelessWidget {
   );
 }
 
+class _AppNotificationLayer extends StatelessWidget {
+  const _AppNotificationLayer({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      child,
+      ValueListenableBuilder<_AppNotification?>(
+        valueListenable: _appNotification,
+        builder: (context, notification, _) {
+          if (notification == null) return const SizedBox.shrink();
+          final mediaQuery = MediaQuery.of(context);
+          final messageSurface = _FrostedSurface(
+            borderRadius: BorderRadius.circular(
+              notification.message.length > 60 ? 22 : 99,
+            ),
+            tintColor: notification.isError ? _red : Colors.white,
+            tintOpacity: notification.isError ? .28 : .52,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            shadow: false,
+            child: AppText(
+              notification.message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: _ink,
+                fontFamily: 'Inter',
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                height: 1.35,
+                decoration: TextDecoration.none,
+              ),
+            ),
+          );
+          return Positioned(
+            left: 0,
+            right: 0,
+            bottom:
+                mediaQuery.viewInsets.bottom + mediaQuery.padding.bottom + 16,
+            child: IgnorePointer(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: notification.width ?? 560,
+                    ),
+                    child: notification.width == null
+                        ? messageSurface
+                        : SizedBox(
+                            width: notification.width,
+                            child: messageSurface,
+                          ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    ],
+  );
+}
+
 class FinanceHome extends StatefulWidget {
   const FinanceHome({super.key});
 
@@ -313,10 +414,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   bool _autoSaveErrorNotified = false;
   DateTime? _autoSaveLastSavedAt;
   String? _autoSaveLastError;
+  MemoryImage? _defaultBrandImageProvider;
   final _calculatorPosition = ValueNotifier<Offset?>(null);
   Offset? _calculatorGrabOffset;
   Timer? _calculatorCloseTimer;
   Timer? _autoSaveTimer;
+  Timer? _notificationTimer;
   final _calculatorLayerKey = GlobalKey();
   final _calculatorButtonKey = GlobalKey();
   final Map<String, String> _productImageSources = {};
@@ -333,12 +436,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       MediaQuery.sizeOf(context).width >= 850;
 
   ImageProvider<Object>? _profileImage(String source) {
-    if (source.isEmpty) return _defaultBrandImage;
+    if (source.isEmpty) return _defaultBrandImageProvider;
     if (_sidebarProfileImageData != source) {
       _sidebarProfileImageData = source;
       _sidebarProfileImage = _imageFromData(source);
     }
-    return _sidebarProfileImage ?? _defaultBrandImage;
+    return _sidebarProfileImage ?? _defaultBrandImageProvider;
   }
 
   ImageProvider<Object>? _productImage(Product product) {
@@ -346,7 +449,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     if (source.isEmpty) {
       _productImageSources.remove(product.id);
       _productImageProviders.remove(product.id);
-      return _defaultBrandImage;
+      return _defaultBrandImageProvider;
     }
     if (_productImageSources[product.id] != source) {
       _productImageSources[product.id] = source;
@@ -357,18 +460,31 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
         _productImageProviders[product.id] = image;
       }
     }
-    return _productImageProviders[product.id] ?? _defaultBrandImage;
+    return _productImageProviders[product.id] ?? _defaultBrandImageProvider;
   }
 
   @override
   void initState() {
     super.initState();
+    unawaited(_initializeDefaultBrandImage());
     if (shouldUseDesktopWindowMaximized()) {
       HardwareKeyboard.instance.addHandler(_handleGlobalShortcut);
       WindowManager.instance.addListener(this);
       unawaited(_refreshWindowMaximizedState());
     }
     _load();
+  }
+
+  Future<void> _initializeDefaultBrandImage() async {
+    try {
+      final bytes = await _defaultBrandImageBytes;
+      if (!mounted) return;
+      setState(() => _defaultBrandImageProvider = MemoryImage(bytes));
+    } catch (error) {
+      if (mounted) {
+        _message('Logo PocketR gagal dimuat: $error', isError: true);
+      }
+    }
   }
 
   Future<void> _refreshWindowMaximizedState() async {
@@ -548,6 +664,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     _windowTransitionResetTimer?.cancel();
     _calculatorCloseTimer?.cancel();
     _autoSaveTimer?.cancel();
+    _dismissNotification();
     _windowTransitionInProgress.value = false;
     _navigationRefresh.dispose();
     _calculatorPosition.dispose();
@@ -1190,6 +1307,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   void _message(String message, {bool isError = false}) {
     if (!mounted) return;
+    _dismissNotification();
     final isLongMessage = message.length > 60;
     final snackWidth = _isDesktop
         ? (isLongMessage
@@ -1198,31 +1316,21 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                     .toDouble()
               : 300.0)
         : null;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Center(
-            child: _FrostedSurface(
-              borderRadius: BorderRadius.circular(isLongMessage ? 22 : 99),
-              tintColor: isError ? _red : Colors.white,
-              tintOpacity: isError ? .28 : .52,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              shadow: false,
-              child: AppText(
-                message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: _ink),
-              ),
-            ),
-          ),
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          width: snackWidth,
-          margin: _isDesktop ? null : const EdgeInsets.all(12),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    _appNotification.value = _AppNotification(
+      message: message,
+      isError: isError,
+      width: snackWidth,
+    );
+    _notificationTimer = Timer(
+      const Duration(seconds: 4),
+      _dismissNotification,
+    );
+  }
+
+  void _dismissNotification() {
+    _notificationTimer?.cancel();
+    _notificationTimer = null;
+    _appNotification.value = null;
   }
 
   Future<void> _copyOrderNumber(String orderNo) async {
@@ -1330,43 +1438,61 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   Future<void> _backup() async {
     try {
-      final bytes = await _createBackupBytes();
       final path = await _withOutsideDismissedPicker(
         () => FilePicker.platform.saveFile(
           dialogTitle: localizeAppText('Simpan cadangan PocketR'),
           fileName: 'pocketr-${_backupDateStamp(DateTime.now())}.pcktr',
           type: FileType.custom,
           allowedExtensions: ['pcktr', 'json'],
-          bytes: bytes,
           lockParentWindow: true,
         ),
       );
-      if (path != null) _message('Cadangan berhasil disimpan.');
+      if (path == null) return;
+      final bytes = await _createBackupBytes();
+      await File(ensureBackupFileExtension(path))
+          .writeAsBytes(bytes, flush: true);
+      _message('Cadangan berhasil disimpan.');
     } catch (error) {
       _message('Cadangan gagal dibuat: $error', isError: true);
     }
   }
 
-  Future<void> _backupAllData() async {
+  Future<void> _backupAllData({
+    void Function(String message, {bool isError, bool isLoading})? onStatus,
+  }) async {
     try {
-      final files = await LocalFileArchive.instance.listFiles(
-        includeRestoredBackups: false,
-      );
-      final bytes = createFullBackupBytes(_data, files);
       final path = await _withOutsideDismissedPicker(
         () => FilePicker.platform.saveFile(
           dialogTitle: localizeAppText('Simpan cadangan lengkap PocketR'),
           fileName: 'pocketr-lengkap-${_backupDateStamp(DateTime.now())}.pcktr',
           type: FileType.custom,
           allowedExtensions: ['pcktr', 'json'],
-          bytes: bytes,
           lockParentWindow: true,
         ),
       );
-      if (path != null) {
-        _message('Cadangan lengkap beserta foto berhasil disimpan.');
-      }
+      if (path == null) return;
+      onStatus?.call('Membuat cadangan lengkap PocketR...', isLoading: true);
+      _message('Membuat cadangan lengkap PocketR...');
+      final files = await LocalFileArchive.instance.listFiles(
+        includeRestoredBackups: false,
+      );
+      final bytes = await compute(
+        createFullBackupBytesFromPayload,
+        createFullBackupPayload(_data, files),
+      );
+      await File(ensureBackupFileExtension(path))
+          .writeAsBytes(bytes, flush: true);
+      onStatus?.call(
+        'Cadangan lengkap beserta foto berhasil disimpan.',
+        isLoading: false,
+      );
+      _message('Cadangan lengkap beserta foto berhasil disimpan.');
     } catch (error) {
+      onStatus?.call(
+        'Cadangan lengkap gagal dibuat: $error',
+        isError: true,
+        isLoading: false,
+      );
       _message('Cadangan lengkap gagal dibuat: $error', isError: true);
     }
   }
@@ -1618,7 +1744,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     }).toList();
   }
 
-  Future<void> _restore() async {
+  Future<void> _restore({bool closeSettingsOnSuccess = false}) async {
     try {
       final result = await _withOutsideDismissedPicker(
         () => FilePicker.platform.pickFiles(
@@ -1651,6 +1777,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       });
       await LocalFileArchive.instance.addRestoredFiles(restoredFiles);
       if (!await _save()) return;
+      if (closeSettingsOnSuccess && mounted) Navigator.of(context).pop();
       _message('Berkas berhasil dibuka.');
     } catch (error) {
       _message('Pemulihan cadangan gagal: $error', isError: true);
@@ -3538,9 +3665,21 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       'Produk, bahan, penjualan, pengeluaran, dan pengaturan akan dihapus permanen.',
     );
     if (!ok) return;
+    if (_data.logo.isNotEmpty) {
+      try {
+        await LocalFileArchive.instance.deleteApplicationImage('profile_logo');
+      } catch (error) {
+        _message('Foto profil gagal dihapus saat reset: $error', isError: true);
+        return;
+      }
+    }
     setState(() {
       _data = FinanceData();
       _selectedProductId = null;
+      _sidebarProfileImageData = null;
+      _sidebarProfileImage = null;
+      _productImageSources.clear();
+      _productImageProviders.clear();
     });
     if (!await _save()) return;
     _message('Semua data telah dihapus.');
@@ -3659,7 +3798,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                             _ProfileAvatar(
                               image:
                                   _imageFromData(selectedLogo) ??
-                                  _defaultBrandImage,
+                                  _defaultBrandImageProvider,
                               size: 68,
                               framed: false,
                             ),
@@ -4007,7 +4146,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   Future<void> _showSettings() async {
     final navigator = Navigator.of(context);
     var closeScheduled = false;
-    var startFullBackup = false;
+    final backupStatus = ValueNotifier(const _BackupProgressStatus());
     void closeSettings() {
       if (closeScheduled) return;
       closeScheduled = true;
@@ -4118,17 +4257,96 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                               ),
                             ),
                             const SizedBox(height: 12),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: _ImportDialogPill(
-                                icon: Icons.backup_outlined,
-                                label: 'Backup Settings',
-                                blue: true,
-                                labelOffset: -1,
-                                onPressed: () {
-                                  startFullBackup = true;
-                                  closeSettings();
-                                },
+                            ValueListenableBuilder<_BackupProgressStatus>(
+                              valueListenable: backupStatus,
+                              builder: (context, status, _) => Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: Wrap(
+                                      alignment: WrapAlignment.end,
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: [
+                                        _ImportDialogPill(
+                                          icon: Icons.restore_outlined,
+                                          label: 'Restore Settings',
+                                          labelOffset: -1,
+                                          onPressed: () => unawaited(
+                                            _restore(
+                                              closeSettingsOnSuccess: true,
+                                            ),
+                                          ),
+                                        ),
+                                        _ImportDialogPill(
+                                          icon: Icons.backup_outlined,
+                                          label: 'Backup Settings',
+                                          blue: true,
+                                          labelOffset: -1,
+                                          onPressed: status.isLoading
+                                              ? null
+                                              : () => unawaited(
+                                                  _backupAllData(
+                                                    onStatus:
+                                                        (
+                                                          message, {
+                                                          isError = false,
+                                                          isLoading = false,
+                                                        }) {
+                                                          if (!context
+                                                              .mounted) {
+                                                            return;
+                                                          }
+                                                          backupStatus.value =
+                                                              _BackupProgressStatus(
+                                                                message:
+                                                                    message,
+                                                                isError:
+                                                                    isError,
+                                                                isLoading:
+                                                                    isLoading,
+                                                              );
+                                                        },
+                                                  ),
+                                                ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (status.message.isNotEmpty) ...[
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        if (status.isLoading) ...[
+                                          const SizedBox(
+                                            width: 14,
+                                            height: 14,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: _blue,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                        ],
+                                        Flexible(
+                                          child: AppText(
+                                            status.message,
+                                            style: TextStyle(
+                                              color: status.isError
+                                                  ? _red
+                                                  : const Color(0xff188a53),
+                                              fontSize: 11,
+                                              height: 1.4,
+                                            ),
+                                            textAlign: TextAlign.right,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                           ],
@@ -4154,9 +4372,6 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       transitionBuilder: (context, animation, secondaryAnimation, child) =>
           _normalDialogTransition(animation, child),
     );
-    if (startFullBackup && mounted) {
-      await _backupAllData();
-    }
   }
 
   Future<void> _showAbout() async {
@@ -8095,16 +8310,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           mode: LaunchMode.externalApplication,
         );
         if (!opened && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: AppText('Profil tidak bisa dibuka')),
-          );
+          _message('Profil tidak bisa dibuka');
         }
       } on PlatformException catch (error) {
         debugPrint('Could not open social profile (${uri.host}): $error');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: AppText('Profil tidak bisa dibuka')),
-          );
+          _message('Profil tidak bisa dibuka');
         }
       }
     }
@@ -9418,6 +9629,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       transitionDuration: const Duration(milliseconds: 220),
       pageBuilder: (dialogContext, animation, secondaryAnimation) {
         final screenSize = MediaQuery.sizeOf(dialogContext);
+        final image = _productImage(product);
         return SafeArea(
           child: Center(
             child: _FrostedSurface(
@@ -9433,10 +9645,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                       maxHeight: screenSize.height * .425,
                     ),
                     child: InteractiveViewer(
-                      child: Image(
-                        image: _productImage(product) ?? _defaultBrandImage,
-                        fit: BoxFit.contain,
-                      ),
+                      child: image != null
+                          ? Image(image: image, fit: BoxFit.contain)
+                          : const _ProfileAvatar(
+                              image: null,
+                              size: 116,
+                              framed: false,
+                            ),
                     ),
                   ),
                   Positioned(
@@ -10986,6 +11201,31 @@ class _ProfileAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final imageSize = framed ? size - 10 : size;
     final radius = BorderRadius.circular(imageSize / 2);
+    Widget fallbackImage() => const ColoredBox(
+      color: Color(0xffe8f3f8),
+      child: Center(
+        child: AppText(
+          'R',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Color(0xff354f60),
+            fontSize: 23,
+            fontWeight: FontWeight.w700,
+            height: 1,
+          ),
+        ),
+      ),
+    );
+    Widget buildImage() {
+      if (image == null) return fallbackImage();
+      return Image(
+        image: image!,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (context, error, stackTrace) => fallbackImage(),
+      );
+    }
+
     final avatar = Container(
       width: imageSize,
       height: imageSize,
@@ -11009,24 +11249,7 @@ class _ProfileAvatar extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (image == null) ...[
-              const ColoredBox(
-                color: Color(0xffe8f3f8),
-                child: Center(
-                  child: AppText(
-                    'R',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xff354f60),
-                      fontSize: 23,
-                      fontWeight: FontWeight.w700,
-                      height: 1,
-                    ),
-                  ),
-                ),
-              ),
-            ] else
-              Image(image: image!, fit: BoxFit.cover, gaplessPlayback: true),
+            buildImage(),
             Positioned.fill(
               child: IgnorePointer(
                 child: DecoratedBox(

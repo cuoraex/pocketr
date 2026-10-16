@@ -23,8 +23,10 @@ const _englishText = <String, String>{
   'Cadangan gagal dibuat': 'Could not create backup',
   'Backup seluruh data': 'Back up all data',
   'Backup Settings': 'Back up now',
+  'Restore Settings': 'Restore settings',
   'Simpan data, foto profil dan produk, serta berkas impor agar bisa dipulihkan di perangkat lain.': 'Save your data, profile and product photos, and imported files so they can be restored on another device.',
   'Simpan cadangan lengkap PocketR': 'Save complete PocketR backup',
+  'Membuat cadangan lengkap PocketR...': 'Creating complete PocketR backup...',
   'Cadangan lengkap beserta foto berhasil disimpan.':
       'Complete backup with photos saved successfully.',
   'Cadangan lengkap gagal dibuat': 'Could not create the complete backup',
