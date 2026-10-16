@@ -7,7 +7,7 @@ dalam satu tempat. Data disimpan secara lokal di perangkat.
 Versi yang ditampilkan di aplikasi: **v1.2**.
 
 [![Release v1.2](https://img.shields.io/badge/Release-v1.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2)
-[![Downloads v1.2](https://img.shields.io/github/downloads/cuoraex/pocketr/v1.2/total?style=for-the-badge&label=Downloads)](https://github.com/cuoraex/pocketr/releases/download/v1.2/PocketR.v1.2.exe)
+[![Downloads](https://img.shields.io/github/downloads/cuoraex/pocketr/total?style=for-the-badge&label=Downloads)](https://github.com/cuoraex/pocketr/releases/latest)
 
 ## Fitur
 
