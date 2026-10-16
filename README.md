@@ -1,34 +1,126 @@
-# PocketR — Catatan Keuangan
+# PocketR
 
-Aplikasi Flutter native untuk mencatat penjualan dan biaya bisnis, menghitung
-HPP produk, laba bersih, zakat, dan pembagian profit owner. Tampilan memakai
-gaya kaca biru yang responsif untuk layar ponsel maupun desktop.
+PocketR adalah aplikasi pencatatan keuangan usaha berbasis Flutter. Aplikasi
+membantu mengelola penjualan, biaya, produk, HPP, stok, dan pembagian laba
+dalam satu tempat. Data disimpan secara lokal di perangkat.
+
+Versi yang ditampilkan di aplikasi: **v1.2**.
+
+[![Release v1.2](https://img.shields.io/badge/Release-v1.2-2ea44f?style=for-the-badge&logo=github)](https://github.com/cuoraex/pocketr/releases/tag/v1.2)
+[![Downloads v1.2](https://img.shields.io/github/downloads/cuoraex/pocketr/v1.2/total?style=for-the-badge&label=Downloads)](https://github.com/cuoraex/pocketr/releases/tag/v1.2)
 
 ## Fitur
 
-- Ringkasan bulanan, grafik omzet harian, target omzet, marketplace, dan rekap tahunan.
-- Pencatatan penjualan per tanggal, marketplace, produk/varian, kuantitas, pesanan,
-  uang diterima, dan HPP yang tersimpan pada catatan.
-- Impor penjualan CSV XLS dengan validasi produk dan deteksi duplikat.
-- Pencatatan biaya operasional, iklan dengan kalkulasi PPN, gaji, dan THR.
-- Pengelolaan produk, varian, daftar bahan baku, dan perhitungan HPP.
-- Pelacakan stok awal, penambahan/koreksi stok, stok minimum, dan pengurangan
-  otomatis dari penjualan.
-- Perhitungan laba bersih, zakat mal, bagian owner, dan status pembayaran owner.
-- Penyimpanan otomatis pada perangkat, serta ekspor/pemulihan backup JSON.
-- Auto-save backup berkala ke direktori lokal pilihan dengan interval 1–30 menit;
-  satu file `pocketr-autosave.pcktr` ditimpa setiap kali.
-- Bahasa antarmuka Indonesia dan English, dengan pilihan tersimpan di perangkat.
+### Keuangan usaha
 
-Data backup menggunakan bentuk JSON PocketR yang kompatibel dengan backup
-aplikasi HTML. Dari aplikasi HTML, buat file backup JSON terlebih dahulu lalu
-pulihkan file itu melalui menu **Backup / Pulihkan** di aplikasi Flutter.
+- Ringkasan bulanan dan tahunan, omzet harian, target omzet, laba, dan performa
+  marketplace.
+- Pencatatan penjualan berdasarkan tanggal, marketplace, produk, varian,
+  kuantitas, nomor pesanan, uang diterima, dan HPP.
+- Pencatatan biaya operasional, iklan, gaji, THR, dan zakat.
+- Penghitungan PPN iklan, laba bersih, zakat mal, serta pembagian dan status
+  pembayaran bagian pemilik.
 
-## Menjalankan
+### Produk, HPP, dan stok
+
+- Kelola produk, foto, warna, ukuran, varian lain, serta rincian bahan baku dan
+  ongkos.
+- Impor rincian HPP dari template Excel. HPP yang diimpor disimpan untuk produk
+  terkait tanpa mengubah katalog bahan baku bersama.
+- Impor template HPP dan penjualan manual menerima rumus aritmetika pada kolom
+  angka: `+`, `-`, `*`, `/`, `^`, `%`, tanda kurung, dan referensi sel pada
+  lembar yang sama. Fungsi Excel seperti `SUM` dan `ROUND` belum didukung.
+- Catat stok awal dan perubahan stok, atur batas peringatan, serta kurangi stok
+  berdasarkan penjualan.
+
+### Impor dan ekspor
+
+- Impor penjualan manual dari template Excel (`.xlsx`), termasuk kolom
+  marketplace. Pilihan marketplace yang dikenali: Shopee, Tokopedia, Lazada,
+  TikTok, dan Lainnya.
+- Impor pesanan Shopee dari file rincian pesanan selesai dan laporan saldo.
+  Impor langsung dari file marketplace lain belum tersedia karena format
+  ekspornya berbeda.
+- Impor data HPP dan unduh template HPP.
+- Ekspor data ke Excel (`.xlsx`) berdasarkan bulan yang dipilih, mencakup
+  ringkasan, penjualan, pengeluaran, serta produk dan HPP. Data penjualan dan
+  pengeluaran menyertakan marketplace terkait.
+
+## Detail layar
+
+- **Ringkasan** — menampilkan performa bulan terpilih, omzet dan laba, grafik
+  omzet harian, penjualan per marketplace, produk terjual, target omzet, serta
+  pembagian laba pemilik. Tersedia juga ringkasan tahunan.
+- **Penjualan** — menampilkan transaksi beserta tanggal, platform, pesanan,
+  produk dan varian, kuantitas, uang diterima, dan HPP. Penjualan dapat dicari
+  dan difilter, serta diimpor dari template manual atau file Shopee.
+- **Pengeluaran** — mengelompokkan biaya operasional, iklan, gaji, THR, dan
+  zakat. Rincian iklan dapat mencatat platform, produk terkait, dan PPN.
+- **Produk dan HPP** — menampilkan katalog produk, varian, bahan baku, ongkos,
+  perhitungan HPP, dan informasi stok.
+- **Pengaturan** — mengatur bahasa dan auto-save lokal, membuat backup lengkap
+  termasuk foto, atau mengatur ulang data.
+- **Tentang** — merangkum fitur aplikasi, menampilkan versi, serta menyediakan
+  tautan profil sosial dan repositori GitHub untuk melihat pembaruan.
+
+## Screenshot
+
+Screenshot berikut menunjukkan tampilan desktop dengan data contoh kosong.
+Versi pada screenshot halaman Tentang dapat berbeda dari versi aplikasi saat ini.
+
+### Ringkasan
+
+![Ringkasan bulanan PocketR](screenshots/dashboard.png)
+
+### Penjualan
+
+![Halaman penjualan PocketR dengan ringkasan per marketplace](screenshots/sales.png)
+
+### Pengeluaran
+
+![Halaman pengeluaran PocketR](screenshots/expenses.png)
+
+### Produk dan HPP
+
+![Halaman produk dan HPP PocketR](screenshots/products.png)
+
+### Tentang
+
+![Halaman informasi aplikasi PocketR](screenshots/about.png)
+
+## Backup dan pemulihan
+
+- Data utama tersimpan otomatis di perangkat.
+- **Backup Settings** di Pengaturan membuat backup lengkap yang mencakup data,
+  foto profil dan produk, serta berkas impor yang tersimpan di arsip aplikasi.
+- Backup reguler dan auto-save lokal memakai file `.pcktr`; file auto-save
+  bernama `pocketr-autosave.pcktr` dan ditimpa pada setiap interval yang dipilih.
+  Auto-save tidak menyertakan foto.
+- Untuk memulihkan backup, gunakan menu **Pulihkan dari cadangan** dan pilih
+  file `.pcktr` atau `.json`.
+- Backup JSON dari aplikasi HTML PocketR juga dapat dipulihkan melalui alur
+  tersebut.
+
+## Bahasa dan aplikasi
+
+Antarmuka tersedia dalam Bahasa Indonesia dan English. Pengaturan bahasa
+disimpan di perangkat. Pada halaman **Tentang**, tautan sosial Cuoraex dan
+repositori GitHub tersedia; **Check for update** membuka repositori untuk
+melihat informasi versi terbaru.
+
+## Menjalankan dari sumber
+
+Pastikan Flutter SDK sudah terpasang, lalu jalankan:
 
 ```shell
 flutter pub get
 flutter run
+```
+
+Untuk menjalankan aplikasi pada Windows:
+
+```shell
+flutter run -d windows
 ```
 
 ## Validasi
@@ -37,3 +129,16 @@ flutter run
 flutter analyze
 flutter test
 ```
+
+## Teknologi
+
+- Flutter dan Dart
+- Excel (`excel`) untuk membaca dan membuat workbook
+- SQLite lokal untuk menyimpan foto aplikasi dan arsip berkas impor
+- Shared Preferences untuk data keuangan dan pengaturan aplikasi
+
+## Tautan
+
+- GitHub: <https://github.com/cuoraex/pocketr>
+- Profil Cuoraex: <https://github.com/cuoraex>
+- Donasi via Tako: <https://tako.id/Cuoraex>
