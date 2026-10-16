@@ -16,6 +16,23 @@ void main() {
   });
 
   group('FinanceData', () {
+    test('can omit profile and product images from saved data', () {
+      final data = FinanceData(
+        logo: 'data:image/png;base64,bG9nbw==',
+        products: [
+          Product(name: 'Tas', img: 'data:image/jpeg;base64,aW1hZ2U='),
+        ],
+        targetRevenue: 125000,
+      );
+
+      final compact = data.toBackup(includeImages: false);
+      final full = data.toBackup();
+
+      expect(compact, contains('"targetRev": 125000.0'));
+      expect(compact, isNot(contains('base64')));
+      expect(full, contains('base64'));
+    });
+
     test(
       'aggregates product sales without merging missing or conflicting IDs',
       () {

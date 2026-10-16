@@ -55,6 +55,13 @@ class ArchivedFile {
   }
 }
 
+class ApplicationImage {
+  const ApplicationImage({required this.mime, required this.bytes});
+
+  final String mime;
+  final Uint8List bytes;
+}
+
 class LocalFileArchive {
   LocalFileArchive() : _directory = null;
 
@@ -96,6 +103,46 @@ class LocalFileArchive {
       ],
     );
     return database.lastInsertRowId;
+  }
+
+  Future<void> saveApplicationImage({
+    required String key,
+    required String mime,
+    required Uint8List bytes,
+  }) async {
+    final database = await _open();
+    _ensureApplicationImagesTable(database);
+    database.execute(
+      '''
+      INSERT INTO application_images (image_key, mime, bytes)
+      VALUES (?, ?, ?)
+      ON CONFLICT(image_key) DO UPDATE SET mime = excluded.mime, bytes = excluded.bytes
+      ''',
+      [key, mime, bytes],
+    );
+  }
+
+  Future<ApplicationImage?> applicationImage(String key) async {
+    final database = await _open();
+    _ensureApplicationImagesTable(database);
+    final rows = database.select(
+      'SELECT mime, bytes FROM application_images WHERE image_key = ?',
+      [key],
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.single;
+    return ApplicationImage(
+      mime: row['mime'] as String,
+      bytes: Uint8List.fromList(row['bytes'] as List<int>),
+    );
+  }
+
+  Future<void> deleteApplicationImage(String key) async {
+    final database = await _open();
+    _ensureApplicationImagesTable(database);
+    database.execute('DELETE FROM application_images WHERE image_key = ?', [
+      key,
+    ]);
   }
 
   Future<List<ArchivedFile>> listFiles({
@@ -183,7 +230,18 @@ class LocalFileArchive {
         bytes BLOB NOT NULL
       )
       ''');
+    _ensureApplicationImagesTable(database);
     return database;
+  }
+
+  void _ensureApplicationImagesTable(Database database) {
+    database.execute('''
+      CREATE TABLE IF NOT EXISTS application_images (
+        image_key TEXT PRIMARY KEY,
+        mime TEXT NOT NULL,
+        bytes BLOB NOT NULL
+      )
+      ''');
   }
 
   static String _extensionOf(String name) {

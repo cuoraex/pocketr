@@ -40,6 +40,29 @@ void main() {
   });
 
   test(
+    'stores application images by key and replaces them on update',
+    () async {
+      await archive.saveApplicationImage(
+        key: 'product:1',
+        mime: 'image/png',
+        bytes: Uint8List.fromList([1, 2, 3]),
+      );
+      await archive.saveApplicationImage(
+        key: 'product:1',
+        mime: 'image/jpeg',
+        bytes: Uint8List.fromList([4, 5]),
+      );
+
+      final image = await archive.applicationImage('product:1');
+
+      expect(image?.mime, 'image/jpeg');
+      expect(image?.bytes, [4, 5]);
+      await archive.deleteApplicationImage('product:1');
+      expect(await archive.applicationImage('product:1'), isNull);
+    },
+  );
+
+  test(
     'migrates existing archived files to the PocketR database name',
     () async {
       final legacyPath = p.join(directory.path, 'rochinku_files.db');

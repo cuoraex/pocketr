@@ -309,8 +309,8 @@ List<int> createSalesTemplateBytes({String languageCode = 'id'}) {
   mergeTitle(
     20,
     english
-        ? 'Make sure dates are valid, Qty is greater than 0, and product names match your catalog.'
-        : 'Pastikan tanggal valid, Qty lebih dari 0, dan nama produk cocok dengan katalog.',
+        ? 'Make sure dates are valid, Qty is greater than 0, and product names match your catalog. Numeric columns support +, -, *, /, ^, %, and same-sheet cell references.'
+        : 'Pastikan tanggal valid, Qty lebih dari 0, dan nama produk cocok dengan katalog. Kolom angka mendukung rumus +, -, *, /, ^, %, dan referensi sel pada lembar yang sama.',
     solidStyle(background: paleBlue, foreground: ink),
   );
   mergeTitle(

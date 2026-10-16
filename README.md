@@ -23,17 +23,6 @@ gaya kaca biru yang responsif untuk layar ponsel maupun desktop.
 Data backup menggunakan bentuk JSON PocketR yang kompatibel dengan backup
 aplikasi HTML. Dari aplikasi HTML, buat file backup JSON terlebih dahulu lalu
 pulihkan file itu melalui menu **Backup / Pulihkan** di aplikasi Flutter.
-
-## Menjalankan
-
-```shell
-flutter pub get
-flutter run
-```
-
-## Validasi
-
-```shell
-flutter analyze
-flutter test
-```
+Foto produk dan logo disimpan di perangkat ini dan tidak disertakan di file
+backup `.pcktr`, sehingga file backup hanya berisi data aplikasi. Gambar
+disimpan dalam format dan ukuran aslinya di penyimpanan internal aplikasi.

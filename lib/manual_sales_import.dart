@@ -4,6 +4,7 @@ import 'package:archive/archive.dart' as archive;
 import 'package:excel/excel.dart' as xlsx;
 
 import 'data.dart';
+import 'excel_formula.dart';
 
 class ManualSaleImportRow {
   const ManualSaleImportRow({
@@ -128,10 +129,41 @@ List<ManualSaleImportRow> parseManualSalesWorkbook(List<int> bytes) {
         '${date.day.toString().padLeft(2, '0')}';
   }
 
-  double? numberValue(xlsx.Data? cell) {
-    final value = cell?.value;
+  double? numberValue(xlsx.Data? cell, [Set<String>? evaluating]) {
+    if (cell == null) return null;
+    final value = cell.value;
     if (value is xlsx.IntCellValue) return value.value.toDouble();
     if (value is xlsx.DoubleCellValue) return value.value;
+    if (value is xlsx.FormulaCellValue) {
+      final coordinate = '${cell.rowIndex}:${cell.columnIndex}';
+      final path = evaluating ?? <String>{};
+      if (!path.add(coordinate)) {
+        throw const FormatException('Rumus Excel memiliki referensi berulang.');
+      }
+      try {
+        return evaluateExcelFormula(
+          value.formula,
+          (columnIndex, rowIndex) {
+            final referenced = sheet.cell(
+              xlsx.CellIndex.indexByColumnRow(
+                columnIndex: columnIndex,
+                rowIndex: rowIndex,
+              ),
+            );
+            final referencedValue = numberValue(referenced, path);
+            if (referencedValue == null) {
+              throw FormatException(
+                'Rumus merujuk ke sel kosong atau non-angka '
+                '(${columnIndex + 1},${rowIndex + 1}).',
+              );
+            }
+            return referencedValue;
+          },
+        );
+      } finally {
+        path.remove(coordinate);
+      }
+    }
     var input = value?.toString().trim().replaceAll(RegExp(r'[^0-9,.\-]'), '');
     if (input == null || input.isEmpty || input == '-') return null;
     final comma = input.lastIndexOf(',');
@@ -150,6 +182,19 @@ List<ManualSaleImportRow> parseManualSalesWorkbook(List<int> bytes) {
       if (decimals != 1 && decimals != 2) input = input.replaceAll('.', '');
     }
     return double.tryParse(input);
+  }
+
+  double? rowNumberValue(List<xlsx.Data?> row, String key, int rowNumber) {
+    final columnIndex = columns[key];
+    if (columnIndex == null || columnIndex >= row.length) return null;
+    try {
+      return numberValue(row[columnIndex]);
+    } on FormatException catch (error) {
+      throw FormatException(
+        '${_columnLabel(key)} tidak valid pada baris $rowNumber: '
+        '${error.message}',
+      );
+    }
   }
 
   final rows = <ManualSaleImportRow>[];
@@ -184,23 +229,15 @@ List<ManualSaleImportRow> parseManualSalesWorkbook(List<int> bytes) {
     if (productName.isEmpty) {
       throw FormatException('Produk wajib diisi pada baris $rowNumber.');
     }
-    final qty = numberValue(
-      columns['qty']! < row.length ? row[columns['qty']!] : null,
-    );
+    final qty = rowNumberValue(row, 'qty', rowNumber);
     if (qty == null || !qty.isFinite || qty <= 0) {
       throw FormatException('Qty harus lebih dari 0 pada baris $rowNumber.');
     }
-    final amount = numberValue(
-      columns['amount']! < row.length ? row[columns['amount']!] : null,
-    );
+    final amount = rowNumberValue(row, 'amount', rowNumber);
     if (amount == null || !amount.isFinite || amount < 0) {
       throw FormatException('Uang diterima tidak valid pada baris $rowNumber.');
     }
-    final hpp = numberValue(
-      columns['hpp'] == null || columns['hpp']! >= row.length
-          ? null
-          : row[columns['hpp']!],
-    );
+    final hpp = rowNumberValue(row, 'hpp', rowNumber);
     if (hpp != null && (!hpp.isFinite || hpp < 0)) {
       throw FormatException('HPP/Pcs tidak valid pada baris $rowNumber.');
     }

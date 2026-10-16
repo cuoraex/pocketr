@@ -231,14 +231,14 @@ class Product {
         : null,
   );
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includeImage = true}) => {
     'id': id,
     'name': name,
     'materials': materials.map((item) => item.toJson()).toList(),
     if (colors.isNotEmpty) 'colors': colors,
     if (sizes.isNotEmpty) 'sizes': sizes,
     if (variants.isNotEmpty) 'variants': variants,
-    if (img.isNotEmpty) 'img': img,
+    if (includeImage && img.isNotEmpty) 'img': img,
     if (stock != null) 'stock': stock!.toJson(),
   };
 }
@@ -653,10 +653,16 @@ class FinanceData {
     return FinanceData.fromJson(backupData);
   }
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includeImages = true}) => {
     'linkedMat': true,
-    'profile': {'name': businessName, 'tagline': tagline, 'logo': logo},
-    'products': products.map((item) => item.toJson()).toList(),
+    'profile': {
+      'name': businessName,
+      'tagline': tagline,
+      if (includeImages && logo.isNotEmpty) 'logo': logo,
+    },
+    'products': products
+        .map((item) => item.toJson(includeImage: includeImages))
+        .toList(),
     'materials': materials.map((item) => item.toJson()).toList(),
     'sales': sales.map((item) => item.toJson()).toList(),
     'expenses': expenses.map((item) => item.toJson()).toList(),
@@ -671,7 +677,9 @@ class FinanceData {
     },
   };
 
-  String toBackup() => const JsonEncoder.withIndent('  ').convert(toJson());
+  String toBackup({bool includeImages = true}) =>
+      const JsonEncoder.withIndent('  ')
+          .convert(toJson(includeImages: includeImages));
 
   Product? productById(String id) {
     for (final product in products) {

@@ -5,6 +5,15 @@ final appLanguageCode = material.ValueNotifier<String>('id');
 
 const _englishText = <String, String>{
   'Impor penjualan dari Excel': 'Import sales from Excel',
+  'Template HPP': 'COGS template',
+  'Impor HPP': 'Import COGS',
+  'Simpan template impor HPP': 'Save COGS import template',
+  'Pilih file impor HPP': 'Choose a COGS import file',
+  'Template HPP berhasil disimpan.': 'COGS template saved.',
+  'Template HPP gagal dibuat': 'Could not create the COGS template',
+  'Konfirmasi impor HPP': 'Confirm COGS import',
+  'Impor HPP berhasil': 'COGS import completed',
+  'Impor HPP gagal': 'COGS import failed',
   'Pilih platform penjualan untuk impor. Saat ini format Shopee tersedia; platform lain akan menyusul karena format Excel berbeda.': 'Choose a platform to import from. Shopee is currently supported; other platforms will follow because their Excel formats differ.',
   'Gagal menyimpan data': 'Could not save data',
   'Bulan yang dipilih gagal disimpan': 'Could not save the selected month',
@@ -12,6 +21,13 @@ const _englishText = <String, String>{
   'Nomor pesanan gagal disalin': 'Could not copy the order number',
   'Cadangan berhasil disimpan.': 'Backup saved successfully.',
   'Cadangan gagal dibuat': 'Could not create backup',
+  'Backup seluruh data': 'Back up all data',
+  'Backup Settings': 'Back up now',
+  'Simpan data, foto profil dan produk, serta berkas impor agar bisa dipulihkan di perangkat lain.': 'Save your data, profile and product photos, and imported files so they can be restored on another device.',
+  'Simpan cadangan lengkap PocketR': 'Save complete PocketR backup',
+  'Cadangan lengkap beserta foto berhasil disimpan.':
+      'Complete backup with photos saved successfully.',
+  'Cadangan lengkap gagal dibuat': 'Could not create the complete backup',
   'Auto-save gagal': 'Auto-save failed',
   'Gagal mengubah mode layar penuh': 'Could not change fullscreen mode',
   'Direktori auto-save gagal dipilih': 'Could not choose the auto-save folder',
@@ -42,6 +58,9 @@ const _englishText = <String, String>{
   'Ikuti Cuoraex': 'Follow Cuoraex',
   'Pilih media sosial untuk melihat profil':
       'Choose a social network to view the profile',
+  'Check for update': 'Check for update',
+  'Lihat versi terbaru di GitHub': 'View the latest version on GitHub',
+  'Tautan repositori tidak bisa dibuka.': 'Could not open the repository link.',
   'Foto profil tidak bisa disimpan': 'Could not save the profile photo',
   'Foto profil tidak bisa disimpan: isi berkas tidak terbaca.':
       'Could not save the profile photo: the file could not be read.',
@@ -431,6 +450,7 @@ const _englishText = <String, String>{
   'Ekspresi belum lengkap.': 'The expression is incomplete.',
   'Ekspresi tidak valid.': 'The expression is invalid.',
   'Hapus produk': 'Delete product',
+  'Hapus gambar': 'Remove image',
   'Harga satuan (Rp)': 'Unit price (IDR)',
   'HPP penjualan awal Rp0; lengkapi HPP di katalog setelah impor.': 'Initial sales use Rp0 COGS; complete the COGS in the catalog after importing.',
   'Input belum lengkap': 'Some required fields are missing',

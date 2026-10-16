@@ -67,6 +67,36 @@ void main() {
     expect(rows.single.hppPerUnit, isNull);
   });
 
+  test('evaluates arithmetic formulas in numeric sales columns', () {
+    final workbook = xlsx.Excel.decodeBytes(createSalesTemplateBytes());
+    final sheet = workbook.tables['Penjualan']!;
+    final values = [
+      xlsx.TextCellValue('2026-10-15'),
+      xlsx.TextCellValue('Shopee'),
+      xlsx.TextCellValue('Tas'),
+      xlsx.TextCellValue(''),
+      xlsx.IntCellValue(0),
+      xlsx.TextCellValue(''),
+      xlsx.IntCellValue(0),
+      xlsx.IntCellValue(0),
+    ];
+    for (final entry in values.indexed) {
+      sheet.updateCell(
+        xlsx.CellIndex.indexByColumnRow(columnIndex: entry.$1, rowIndex: 1),
+        entry.$2,
+      );
+    }
+    sheet.cell(xlsx.CellIndex.indexByString('E2')).setFormula('=6/3');
+    sheet.cell(xlsx.CellIndex.indexByString('G2')).setFormula('=E2*25000');
+    sheet.cell(xlsx.CellIndex.indexByString('H2')).setFormula('=G2/4');
+
+    final rows = parseManualSalesWorkbook(workbook.encode()!);
+
+    expect(rows.single.qty, 2);
+    expect(rows.single.amountReceived, 50000);
+    expect(rows.single.hppPerUnit, 12500);
+  });
+
   test('rejects invalid required data with the worksheet row number', () {
     final workbook = xlsx.Excel.decodeBytes(createSalesTemplateBytes());
     final values = [

@@ -1,12 +1,110 @@
 #include "flutter_window.h"
 
+#include <cwchar>
+#include <future>
 #include <optional>
+#include <thread>
 
 #include "flutter/generated_plugin_registrant.h"
 
 namespace {
 
 constexpr char kWindowStateChannelName[] = "pocketr/window_state";
+
+HHOOK g_mouse_hook = nullptr;
+HWND g_owner_window = nullptr;
+DWORD g_mouse_hook_thread_id = 0;
+std::thread g_mouse_hook_thread;
+
+void StopDialogDismissHook();
+
+bool IsOwnedFileDialog(HWND window) {
+  if (window == g_owner_window || !IsWindowVisible(window) ||
+      GetAncestor(window, GA_ROOTOWNER) != g_owner_window) {
+    return false;
+  }
+  wchar_t class_name[64]{};
+  return GetClassName(window, class_name, ARRAYSIZE(class_name)) > 0 &&
+         wcscmp(class_name, L"#32770") == 0;
+}
+
+void RequestFileDialogClose(HWND window) {
+  PostMessage(window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+  PostMessage(window, WM_CLOSE, 0, 0);
+}
+
+BOOL CALLBACK CancelOwnedFileDialog(HWND window, LPARAM) {
+  if (IsOwnedFileDialog(window)) {
+    RequestFileDialogClose(window);
+  }
+  return TRUE;
+}
+
+BOOL CALLBACK CloseDialogIfClickedOutside(HWND window, LPARAM lparam) {
+  const auto* point = reinterpret_cast<const POINT*>(lparam);
+  if (!IsOwnedFileDialog(window)) {
+    return TRUE;
+  }
+  RECT bounds{};
+  if (GetWindowRect(window, &bounds) && !PtInRect(&bounds, *point)) {
+    RequestFileDialogClose(window);
+  }
+  return TRUE;
+}
+
+LRESULT CALLBACK DialogMouseHook(int code, WPARAM wparam, LPARAM lparam) {
+  if (code == HC_ACTION && wparam == WM_LBUTTONDOWN &&
+      g_owner_window != nullptr) {
+    const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
+    POINT point = info->pt;
+    EnumWindows(CloseDialogIfClickedOutside, reinterpret_cast<LPARAM>(&point));
+  }
+  return CallNextHookEx(g_mouse_hook, code, wparam, lparam);
+}
+
+bool StartDialogDismissHook(HWND owner_window) {
+  StopDialogDismissHook();
+  g_owner_window = owner_window;
+  std::promise<bool> hook_installed;
+  auto hook_result = hook_installed.get_future();
+  g_mouse_hook_thread = std::thread(
+      [promise = std::move(hook_installed)]() mutable {
+        g_mouse_hook_thread_id = GetCurrentThreadId();
+        g_mouse_hook = SetWindowsHookEx(WH_MOUSE_LL, DialogMouseHook,
+                                        GetModuleHandle(nullptr), 0);
+        MSG message{};
+        PeekMessage(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+        promise.set_value(g_mouse_hook != nullptr);
+        if (g_mouse_hook == nullptr) return;
+
+        while (GetMessage(&message, nullptr, 0, 0) > 0) {
+        }
+        UnhookWindowsHookEx(g_mouse_hook);
+        g_mouse_hook = nullptr;
+      });
+  if (!hook_result.get()) {
+    if (g_mouse_hook_thread.joinable()) g_mouse_hook_thread.join();
+    g_owner_window = nullptr;
+    g_mouse_hook_thread_id = 0;
+    return false;
+  }
+  return true;
+}
+
+void StopDialogDismissHook() {
+  if (g_owner_window != nullptr) {
+    EnumWindows(CancelOwnedFileDialog, 0);
+  }
+  if (g_mouse_hook_thread.joinable()) {
+    if (g_mouse_hook_thread_id != 0) {
+      PostThreadMessage(g_mouse_hook_thread_id, WM_QUIT, 0, 0);
+    }
+    g_mouse_hook_thread.join();
+  }
+  g_mouse_hook = nullptr;
+  g_owner_window = nullptr;
+  g_mouse_hook_thread_id = 0;
+}
 
 }  // namespace
 
@@ -39,6 +137,16 @@ bool FlutterWindow::OnCreate() {
           &flutter::StandardMethodCodec::GetInstance());
   window_state_channel_->SetMethodCallHandler(
       [this](const auto& call, auto result) {
+        if (call.method_name() == "dismissDialogOnOutsideClick") {
+          result->Success(
+              flutter::EncodableValue(StartDialogDismissHook(GetHandle())));
+          return;
+        }
+        if (call.method_name() == "stopDismissDialog") {
+          StopDialogDismissHook();
+          result->Success(flutter::EncodableValue(true));
+          return;
+        }
         if (call.method_name() != "setFullScreen") {
           result->NotImplemented();
           return;
@@ -84,6 +192,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  StopDialogDismissHook();
   if (window_state_channel_) {
     window_state_channel_->SetMethodCallHandler({});
     window_state_channel_.reset();

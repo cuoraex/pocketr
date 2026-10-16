@@ -48,7 +48,6 @@ dependencies:
   screen_retriever: ^0.2.2
   url_launcher: ^6.3.2
   archive: 3.6.1
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -96,6 +95,7 @@ flutter:
     - assets/images/pocketr_app_icon.png
     - assets/images/pocketr_about_banner.png
     - assets/images/cuoraex_profile.jpg
+    - assets/images/github-logo.png
     - assets/images/instagram_logo.png
     - assets/images/threads_logo.png
     - assets/images/pocketr_default.png

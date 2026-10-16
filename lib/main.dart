@@ -15,8 +15,11 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app_localization.dart';
+import 'backup.dart';
 import 'data.dart';
 import 'finance_excel.dart';
+import 'hpp_import.dart';
+import 'hpp_template.dart';
 import 'local_file_archive.dart';
 import 'manual_sales_import.dart';
 import 'sales_template.dart';
@@ -31,7 +34,7 @@ Future<void> main() async {
 }
 
 const _blue = Color(0xff2f7de1);
-const _appVersion = '1.0.0';
+const _appVersion = '1.2';
 const _ink = Color(0xff10202c);
 const _muted = Color(0xff52697b);
 const _green = Color(0xff1f8f4f);
@@ -47,6 +50,26 @@ const _slideUpMaxStaggerRows = 5;
 const _defaultBrandImage = AssetImage('assets/images/pocketr_default.png');
 final _windowTransitionInProgress = ValueNotifier<bool>(false);
 const _windowStateChannel = MethodChannel('pocketr/window_state');
+
+Future<T> _withOutsideDismissedPicker<T>(
+  Future<T> Function() showPicker,
+) async {
+  if (!Platform.isWindows) return showPicker();
+
+  final hookInstalled =
+      await _windowStateChannel.invokeMethod<bool>(
+        'dismissDialogOnOutsideClick',
+      ) ??
+      false;
+  if (!hookInstalled) {
+    throw StateError('Gagal mengaktifkan penutup dialog file.');
+  }
+  try {
+    return await showPicker();
+  } finally {
+    await _windowStateChannel.invokeMethod<void>('stopDismissDialog');
+  }
+}
 
 class _ShopeeImportLine {
   const _ShopeeImportLine({
@@ -98,6 +121,13 @@ ImageProvider<Object>? _imageFromData(String source) {
     return null;
   }
 }
+
+String _imageMimeFromName(String name) =>
+    switch (p.extension(name).toLowerCase()) {
+      '.jpg' || '.jpeg' => 'image/jpeg',
+      '.webp' => 'image/webp',
+      _ => 'image/png',
+    };
 
 Widget _normalDialogTransition(Animation<double> animation, Widget child) {
   final transition = CurvedAnimation(
@@ -530,13 +560,16 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   Future<void> _load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final hasCurrentStorage = prefs.getString(_storageKey) != null;
       final stored =
           prefs.getString(_storageKey) ?? prefs.getString(_legacyStorageKey);
       if (stored != null) {
         _data = FinanceData.fromBackup(stored);
-        if (prefs.getString(_storageKey) == null) {
-          final saved = await prefs.setString(_storageKey, stored);
-          if (!saved) throw StateError('Migrasi penyimpanan lokal gagal.');
+        await _hydrateApplicationImages(_data);
+        final compactData = _data.toBackup(includeImages: false);
+        final saved = await prefs.setString(_storageKey, compactData);
+        if (!saved) throw StateError('Migrasi penyimpanan lokal gagal.');
+        if (!hasCurrentStorage) {
           await prefs.remove(_legacyStorageKey);
         }
       }
@@ -616,10 +649,535 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     unawaited(_persistSelectedMonth(month));
   }
 
+  Future<void> _downloadHppTemplate() async {
+    try {
+      final path = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.saveFile(
+          dialogTitle: 'Simpan template impor HPP',
+          fileName: 'pocketr-template-hpp.xlsx',
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+          bytes: Uint8List.fromList(createHppTemplateBytes()),
+          lockParentWindow: true,
+        ),
+      );
+      if (path != null) _message('Template HPP berhasil disimpan.');
+    } catch (error) {
+      _message('Template HPP gagal dibuat: $error', isError: true);
+    }
+  }
+
+  Future<void> _showHppImportMenu() async {
+    final action = await showGeneralDialog<String>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+      barrierColor: const Color(0x180f202c),
+      transitionDuration: const Duration(milliseconds: 280),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: _FrostedSurface(
+              borderRadius: BorderRadius.circular(26),
+              tintColor: _popupTintColor,
+              tintOpacity: _popupTintOpacity,
+              padding: const EdgeInsets.all(22),
+              blurSigma: 18,
+              prominentShadow: true,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: _blue.withValues(alpha: .1),
+                          borderRadius: BorderRadius.circular(13),
+                        ),
+                        child: const Icon(
+                          Icons.inventory_2_outlined,
+                          color: _blue,
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            AppText(
+                              'Impor HPP',
+                              style: TextStyle(
+                                color: _ink,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                decoration: TextDecoration.none,
+                              ),
+                            ),
+                            SizedBox(height: 2),
+                            AppText(
+                              'Bahan baku dan ongkos per produk',
+                              style: TextStyle(
+                                color: _muted,
+                                fontSize: 12,
+                                decoration: TextDecoration.none,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _PopIconButton(
+                        tooltip: localizeAppText('Tutup'),
+                        onPressed: () => Navigator.pop(dialogContext),
+                        style: IconButton.styleFrom(
+                          foregroundColor: _muted,
+                          backgroundColor: Colors.white.withValues(alpha: .5),
+                          minimumSize: const Size(34, 34),
+                          padding: EdgeInsets.zero,
+                        ),
+                        icon: const Icon(Icons.close, size: 17),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  _HppImportAction(
+                    icon: Icons.upload_file_outlined,
+                    title: 'Impor dari Excel',
+                    detail: 'Pilih file template yang sudah diisi',
+                    primary: true,
+                    onTap: () => Navigator.pop(dialogContext, 'import'),
+                  ),
+                  const SizedBox(height: 10),
+                  _HppImportAction(
+                    icon: Icons.download_outlined,
+                    title: 'Unduh template Excel',
+                    detail: 'Lihat format dan contoh pengisian HPP',
+                    onTap: () => Navigator.pop(dialogContext, 'template'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+      transitionBuilder: (context, animation, secondaryAnimation, child) =>
+          _normalDialogTransition(animation, child),
+    );
+    if (!mounted) return;
+    if (action == 'import') {
+      await _importHppExcel();
+    } else if (action == 'template') {
+      await _downloadHppTemplate();
+    }
+  }
+
+  Future<void> _importHppExcel() async {
+    try {
+      final result = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.pickFiles(
+          dialogTitle: 'Pilih file impor HPP',
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+          withData: true,
+          lockParentWindow: true,
+        ),
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.single;
+      final bytes =
+          file.bytes ??
+          (file.path == null ? null : await File(file.path!).readAsBytes());
+      if (bytes == null || bytes.isEmpty) {
+        throw FormatException('Isi berkas "${file.name}" tidak terbaca.');
+      }
+      final rows = await compute(parseHppWorkbook, bytes);
+      final rowsByProduct = <String, List<HppImportRow>>{};
+      final productNames = <String, String>{};
+      String normalize(String value) =>
+          value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+      for (final row in rows) {
+        final key = normalize(row.productName);
+        rowsByProduct.putIfAbsent(key, () => []).add(row);
+        productNames.putIfAbsent(key, () => row.productName.trim());
+      }
+
+      final existingByName = <String, List<Product>>{};
+      for (final product in _data.products) {
+        existingByName
+            .putIfAbsent(normalize(product.name), () => [])
+            .add(product);
+      }
+      for (final key in rowsByProduct.keys) {
+        if ((existingByName[key]?.length ?? 0) > 1) {
+          throw FormatException(
+            'Ada lebih dari satu produk bernama "${productNames[key]}". '
+            'Ubah nama produk agar impor tidak salah sasaran.',
+          );
+        }
+      }
+
+      final newProducts = rowsByProduct.keys
+          .where((key) => existingByName[key] == null)
+          .length;
+      final replaceProducts = rowsByProduct.length - newProducts;
+      final newProductDetails = rowsByProduct.keys
+          .where((key) => existingByName[key] == null)
+          .map((key) => productNames[key]!)
+          .toList();
+      final replacedProductDetails = rowsByProduct.keys
+          .where((key) => existingByName[key] != null)
+          .map((key) {
+            final itemCount = rowsByProduct[key]!.length;
+            return '${productNames[key]} · $itemCount rincian HPP baru';
+          })
+          .toList();
+      final confirmed = await _confirmHppImport(
+        productCount: rowsByProduct.length,
+        detailCount: rows.length,
+        newProducts: newProducts,
+        replaceProducts: replaceProducts,
+        newProductDetails: newProductDetails,
+        replacedProductDetails: replacedProductDetails,
+      );
+      if (!confirmed || !mounted) return;
+
+      setState(() {
+        for (final entry in rowsByProduct.entries) {
+          final materials = entry.value
+              .map(
+                (row) => MaterialCost(
+                  name: row.itemName,
+                  qty: row.qty,
+                  unit: row.unit,
+                  price: row.price,
+                  category: row.category,
+                ),
+              )
+              .toList();
+          final existing = existingByName[entry.key]?.singleOrNull;
+          if (existing == null) {
+            _data.products.add(
+              Product(name: productNames[entry.key]!, materials: materials),
+            );
+          } else {
+            existing.materials = materials;
+          }
+        }
+      });
+      if (!await _save()) return;
+      _message(
+        'Impor HPP berhasil: ${rowsByProduct.length} produk, ${rows.length} rincian.',
+      );
+    } catch (error) {
+      _message('Impor HPP gagal: $error', isError: true);
+    }
+  }
+
+  Future<bool> _confirmHppImport({
+    required int productCount,
+    required int detailCount,
+    required int newProducts,
+    required int replaceProducts,
+    required List<String> newProductDetails,
+    required List<String> replacedProductDetails,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        Future<void> showProductDetails(
+          String title,
+          List<String> details,
+        ) async {
+          await showDialog<void>(
+            context: dialogContext,
+            builder: (detailsContext) => AlertDialog(
+              title: AppText(
+                title,
+                style: const TextStyle(
+                  fontFamily: 'Inter',
+                  color: _ink,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              content: SizedBox(
+                width: 360,
+                child: details.isEmpty
+                    ? const SizedBox(
+                        height: 42,
+                        child: Center(
+                          child: AppText(
+                            'Tidak ada produk pada bagian ini.',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              color: _muted,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      )
+                    : ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight:
+                              (MediaQuery.sizeOf(detailsContext).height * .48)
+                                  .clamp(100.0, 420.0)
+                                  .toDouble(),
+                        ),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: details.length,
+                          physics: const ClampingScrollPhysics(),
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 6),
+                          itemBuilder: (context, index) => Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: _blue.withValues(alpha: .07),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: SelectableText(
+                              details[index],
+                              style: const TextStyle(
+                                fontFamily: 'Inter',
+                                color: _ink,
+                                fontSize: 12,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
+              actions: [
+                _PopTextButton(
+                  onPressed: () => Navigator.pop(detailsContext),
+                  child: const AppText(
+                    'Tutup',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      color: _ink,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        Widget metricCard({
+          required String label,
+          required int value,
+          required IconData icon,
+          required List<String> details,
+        }) => Expanded(
+          child: SizedBox(
+            height: 72,
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(15),
+              child: InkWell(
+                onTap: () => showProductDetails(label, details),
+                borderRadius: BorderRadius.circular(15),
+                splashFactory: NoSplash.splashFactory,
+                overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+                child: Ink(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: .42),
+                    borderRadius: BorderRadius.circular(15),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: .6),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(icon, color: _blue, size: 18),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            AppText(
+                              '$value',
+                              style: const TextStyle(
+                                fontFamily: 'Inter',
+                                color: _ink,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            AppText(
+                              label,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: 'Inter',
+                                color: _muted,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        color: _muted.withValues(alpha: .8),
+                        size: 18,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        return AlertDialog(
+          title: const AppText('Konfirmasi impor HPP'),
+          content: SizedBox(
+            width: 420,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(dialogContext).height * .68,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(15),
+                      decoration: BoxDecoration(
+                        color: _blue.withValues(alpha: .09),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: _blue.withValues(alpha: .14)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: _blue.withValues(alpha: .13),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.inventory_2_outlined,
+                              color: _blue,
+                              size: 21,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                AppText(
+                                  '$productCount produk · $detailCount rincian',
+                                  style: const TextStyle(
+                                    color: _ink,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                const AppText(
+                                  'Siap ditambahkan dari file Excel.',
+                                  style: TextStyle(color: _muted, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        metricCard(
+                          label: 'Produk baru',
+                          value: newProducts,
+                          icon: Icons.add_box_outlined,
+                          details: newProductDetails,
+                        ),
+                        const SizedBox(width: 8),
+                        metricCard(
+                          label: 'HPP diganti',
+                          value: replaceProducts,
+                          icon: Icons.edit_note_outlined,
+                          details: replacedProductDetails,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _orange.withValues(alpha: .1),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.info_outline, color: _orange, size: 18),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: AppText(
+                              'Foto, varian, dan stok tetap. Rincian HPP produk yang sudah ada akan diganti; katalog bahan baku tidak berubah.',
+                              style: TextStyle(
+                                color: _ink,
+                                fontSize: 12,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            _PopTextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const AppText('Batal'),
+            ),
+            _PopFilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const AppText('Impor'),
+            ),
+          ],
+        );
+      },
+    );
+    return confirmed == true;
+  }
+
   Future<bool> _save({bool rebuild = true}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = await prefs.setString(_storageKey, _data.toBackup());
+      final saved = await prefs.setString(
+        _storageKey,
+        _data.toBackup(includeImages: false),
+      );
       if (!saved) throw StateError('Penyimpanan lokal menolak data.');
       await _persistSelectedMonth(_month);
       if (mounted && rebuild) setState(() {});
@@ -682,6 +1240,8 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     String title,
     String body, {
     bool translateBody = true,
+    String confirmLabel = 'Hapus',
+    bool confirmBlue = false,
   }) async =>
       await showGeneralDialog<bool>(
         context: context,
@@ -721,11 +1281,19 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                   translateBody
                       ? AppText(
                           body,
-                          style: const TextStyle(color: _ink, fontSize: 14),
+                          style: const TextStyle(
+                            color: _ink,
+                            fontSize: 14,
+                            height: 1.45,
+                          ),
                         )
                       : AppText.raw(
                           body,
-                          style: const TextStyle(color: _ink, fontSize: 14),
+                          style: const TextStyle(
+                            color: _ink,
+                            fontSize: 14,
+                            height: 1.45,
+                          ),
                         ),
                   const SizedBox(height: 22),
                   Row(
@@ -733,14 +1301,15 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                     children: [
                       _ImportDialogPill(
                         label: 'Batal',
-                        labelOffset: -2,
+                        labelOffset: -1,
                         onPressed: () => Navigator.pop(context, false),
                       ),
                       const SizedBox(width: 4),
                       _ImportDialogPill(
-                        label: 'Hapus',
-                        danger: true,
-                        labelOffset: -2,
+                        label: confirmLabel,
+                        blue: confirmBlue,
+                        danger: !confirmBlue,
+                        labelOffset: -1,
                         onPressed: () => Navigator.pop(context, true),
                       ),
                     ],
@@ -755,16 +1324,22 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       ) ??
       false;
 
+  String _backupDateStamp(DateTime date) =>
+      '${date.day.toString().padLeft(2, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-${date.year}';
+
   Future<void> _backup() async {
     try {
       final bytes = await _createBackupBytes();
-      final path = await FilePicker.platform.saveFile(
-        dialogTitle: localizeAppText('Simpan cadangan PocketR'),
-        fileName:
-            'pocketr-cadangan-${DateTime.now().toIso8601String().substring(0, 10)}.pcktr',
-        type: FileType.custom,
-        allowedExtensions: ['pcktr', 'json'],
-        bytes: bytes,
+      final path = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.saveFile(
+          dialogTitle: localizeAppText('Simpan cadangan PocketR'),
+          fileName: 'pocketr-${_backupDateStamp(DateTime.now())}.pcktr',
+          type: FileType.custom,
+          allowedExtensions: ['pcktr', 'json'],
+          bytes: bytes,
+          lockParentWindow: true,
+        ),
       );
       if (path != null) _message('Cadangan berhasil disimpan.');
     } catch (error) {
@@ -772,15 +1347,35 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     }
   }
 
+  Future<void> _backupAllData() async {
+    try {
+      final files = await LocalFileArchive.instance.listFiles(
+        includeRestoredBackups: false,
+      );
+      final bytes = createFullBackupBytes(_data, files);
+      final path = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.saveFile(
+          dialogTitle: localizeAppText('Simpan cadangan lengkap PocketR'),
+          fileName: 'pocketr-lengkap-${_backupDateStamp(DateTime.now())}.pcktr',
+          type: FileType.custom,
+          allowedExtensions: ['pcktr', 'json'],
+          bytes: bytes,
+          lockParentWindow: true,
+        ),
+      );
+      if (path != null) {
+        _message('Cadangan lengkap beserta foto berhasil disimpan.');
+      }
+    } catch (error) {
+      _message('Cadangan lengkap gagal dibuat: $error', isError: true);
+    }
+  }
+
   Future<Uint8List> _createBackupBytes() async {
-    final archivedFiles = await LocalFileArchive.instance.listFiles(
-      includeRestoredBackups: false,
-    );
     final backup = {
       'format': 'pocketr-backup',
-      'version': 2,
-      'data': jsonDecode(_data.toBackup()),
-      'files': archivedFiles.map((file) => file.toJson()).toList(),
+      'version': 3,
+      'data': jsonDecode(_data.toBackup(includeImages: false)),
     };
     return Uint8List.fromList(utf8.encode(jsonEncode(backup)));
   }
@@ -849,9 +1444,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   Future<void> _selectAutoSaveDirectory() async {
     try {
-      final directory = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: localizeAppText('Pilih direktori auto-save PocketR'),
-        initialDirectory: _autoSaveDirectory,
+      final directory = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.getDirectoryPath(
+          dialogTitle: localizeAppText('Pilih direktori auto-save PocketR'),
+          initialDirectory: _autoSaveDirectory,
+          lockParentWindow: true,
+        ),
       );
       if (directory == null) return;
       if (directory.isEmpty || !await Directory(directory).exists()) {
@@ -951,6 +1549,59 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     );
   }
 
+  Future<void> _saveApplicationImage(
+    String key,
+    String source,
+    Uint8List? bytes,
+  ) async {
+    if (bytes == null) {
+      await LocalFileArchive.instance.deleteApplicationImage(key);
+      return;
+    }
+    final separator = source.indexOf(',');
+    final mimeEnd = source.indexOf(';');
+    if (!source.startsWith('data:') ||
+        separator < 0 ||
+        mimeEnd < 5 ||
+        mimeEnd > separator) {
+      throw const FormatException('Format foto internal tidak valid.');
+    }
+    final mime = source.substring(5, mimeEnd);
+    await LocalFileArchive.instance.saveApplicationImage(
+      key: key,
+      mime: mime,
+      bytes: bytes,
+    );
+  }
+
+  Future<void> _hydrateApplicationImages(FinanceData data) async {
+    Future<String> restoreImage(String key, String source) async {
+      if (source.startsWith('data:')) {
+        final separator = source.indexOf(',');
+        final mimeEnd = source.indexOf(';');
+        if (separator < 0 || mimeEnd < 5 || mimeEnd > separator) {
+          throw const FormatException('Format foto tersimpan tidak valid.');
+        }
+        final bytes = base64Decode(source.substring(separator + 1));
+        await LocalFileArchive.instance.saveApplicationImage(
+          key: key,
+          mime: source.substring(5, mimeEnd),
+          bytes: bytes,
+        );
+        return source;
+      }
+      final image = await LocalFileArchive.instance.applicationImage(key);
+      return image == null
+          ? ''
+          : 'data:${image.mime};base64,${base64Encode(image.bytes)}';
+    }
+
+    data.logo = await restoreImage('profile_logo', data.logo);
+    for (final product in data.products) {
+      product.img = await restoreImage('product:${product.id}', product.img);
+    }
+  }
+
   List<ArchivedFile> _archivedFilesFromBackup(Object? decoded) {
     if (decoded is! Map<String, dynamic> || decoded['files'] == null) {
       return [];
@@ -969,11 +1620,14 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   Future<void> _restore() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        dialogTitle: localizeAppText('Pilih berkas cadangan PocketR'),
-        type: FileType.custom,
-        allowedExtensions: ['pcktr', 'json'],
-        withData: true,
+      final result = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.pickFiles(
+          dialogTitle: localizeAppText('Pilih berkas cadangan PocketR'),
+          type: FileType.custom,
+          allowedExtensions: ['pcktr', 'json'],
+          withData: true,
+          lockParentWindow: true,
+        ),
       );
       if (result == null || result.files.isEmpty) return;
       final bytes = result.files.single.bytes;
@@ -988,6 +1642,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       );
       final decodedBackup = jsonDecode(backupSource);
       final restored = FinanceData.fromBackup(backupSource);
+      await _hydrateApplicationImages(restored);
       final restoredFiles = _archivedFilesFromBackup(decodedBackup);
       if (!mounted) return;
       setState(() {
@@ -1017,15 +1672,18 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                   _beginWindowTransition();
                   final FilePickerResult? result;
                   try {
-                    result = await FilePicker.platform.pickFiles(
-                      dialogTitle: localizeAppText(
-                        'Pilih dua berkas ekspor Shopee',
+                    result = await _withOutsideDismissedPicker(
+                      () => FilePicker.platform.pickFiles(
+                        dialogTitle: localizeAppText(
+                          'Pilih dua berkas ekspor Shopee',
+                        ),
+                        type: FileType.custom,
+                        allowedExtensions: ['xlsx'],
+                        allowMultiple: true,
+                        withData: true,
+                        withReadStream: true,
+                        lockParentWindow: true,
                       ),
-                      type: FileType.custom,
-                      allowedExtensions: ['xlsx'],
-                      allowMultiple: true,
-                      withData: true,
-                      withReadStream: true,
                     );
                   } finally {
                     _finishWindowTransition();
@@ -1285,13 +1943,16 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
 
   Future<void> _downloadSalesTemplate() async {
     try {
-      final path = await FilePicker.platform.saveFile(
-        dialogTitle: localizeAppText('Simpan templat impor Excel'),
-        fileName: 'pocketr-template-penjualan.xlsx',
-        type: FileType.custom,
-        allowedExtensions: ['xlsx'],
-        bytes: Uint8List.fromList(
-          createSalesTemplateBytes(languageCode: appLanguageCode.value),
+      final path = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.saveFile(
+          dialogTitle: localizeAppText('Simpan templat impor Excel'),
+          fileName: 'pocketr-template-penjualan.xlsx',
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+          bytes: Uint8List.fromList(
+            createSalesTemplateBytes(languageCode: appLanguageCode.value),
+          ),
+          lockParentWindow: true,
         ),
       );
       if (path != null) _message('Template Excel berhasil disimpan.');
@@ -1304,11 +1965,14 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     BuildContext salesImportDialogContext,
   ) async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        dialogTitle: localizeAppText('Pilih template penjualan manual'),
-        type: FileType.custom,
-        allowedExtensions: ['xlsx'],
-        withData: true,
+      final result = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.pickFiles(
+          dialogTitle: localizeAppText('Pilih template penjualan manual'),
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+          withData: true,
+          lockParentWindow: true,
+        ),
       );
       if (result == null || result.files.isEmpty) return;
       final file = result.files.single;
@@ -1832,12 +2496,15 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
         _month,
         languageCode: appLanguageCode.value,
       );
-      final path = await FilePicker.platform.saveFile(
-        dialogTitle: localizeAppText('Ekspor data PocketR ke Excel'),
-        fileName: 'pocketr-data-$_month.xlsx',
-        type: FileType.custom,
-        allowedExtensions: ['xlsx'],
-        bytes: Uint8List.fromList(bytes),
+      final path = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.saveFile(
+          dialogTitle: localizeAppText('Ekspor data PocketR ke Excel'),
+          fileName: 'pocketr-data-$_month.xlsx',
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+          bytes: Uint8List.fromList(bytes),
+          lockParentWindow: true,
+        ),
       );
       if (path != null) _message('Data Excel berhasil diekspor.');
     } catch (error) {
@@ -2906,7 +3573,8 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     }
 
     var selectedLogo = _data.logo;
-    PlatformFile? pendingLogoFile;
+    Uint8List? pendingLogoBytes;
+    String? pendingLogoMime;
     final tapDetails = _profileTapDetails;
     _profileTapDetails = null;
     final viewportSize = MediaQuery.sizeOf(context);
@@ -3011,20 +3679,24 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                                       child: TextButton.icon(
                                         onPressed: () async {
                                           try {
-                                            final picked = await FilePicker
-                                                .platform
-                                                .pickFiles(
-                                                  dialogTitle: localizeAppText(
-                                                    'Pilih logo usaha',
-                                                  ),
-                                                  type: FileType.custom,
-                                                  allowedExtensions: [
-                                                    'png',
-                                                    'jpg',
-                                                    'jpeg',
-                                                    'webp',
-                                                  ],
-                                                  withData: true,
+                                            final picked =
+                                                await _withOutsideDismissedPicker(
+                                                  () => FilePicker.platform
+                                                      .pickFiles(
+                                                        dialogTitle:
+                                                            localizeAppText(
+                                                              'Pilih logo usaha',
+                                                            ),
+                                                        type: FileType.custom,
+                                                        allowedExtensions: [
+                                                          'png',
+                                                          'jpg',
+                                                          'jpeg',
+                                                          'webp',
+                                                        ],
+                                                        withData: true,
+                                                        lockParentWindow: true,
+                                                      ),
                                                 );
                                             if (picked == null ||
                                                 picked.files.isEmpty) {
@@ -3037,18 +3709,15 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                                                 'Isi berkas foto tidak terbaca.',
                                               );
                                             }
-                                            final extension = file.extension
-                                                ?.toLowerCase();
-                                            final mime = switch (extension) {
-                                              'jpg' || 'jpeg' => 'image/jpeg',
-                                              'webp' => 'image/webp',
-                                              _ => 'image/png',
-                                            };
+                                            final mime = _imageMimeFromName(
+                                              file.name,
+                                            );
                                             final logo =
                                                 'data:$mime;base64,${base64Encode(bytes)}';
                                             setDialogState(() {
                                               selectedLogo = logo;
-                                              pendingLogoFile = file;
+                                              pendingLogoBytes = bytes;
+                                              pendingLogoMime = mime;
                                             });
                                           } catch (error) {
                                             _message(
@@ -3096,7 +3765,8 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                                             onPressed: () async {
                                               setDialogState(() {
                                                 selectedLogo = '';
-                                                pendingLogoFile = null;
+                                                pendingLogoBytes = null;
+                                                pendingLogoMime = null;
                                               });
                                             },
                                             style: TextButton.styleFrom(
@@ -3183,20 +3853,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       },
     );
     if (ok == true) {
-      if (pendingLogoFile != null) {
-        final file = pendingLogoFile!;
-        final bytes = file.bytes;
-        if (bytes == null) {
-          _message(
-            'Foto profil tidak bisa disimpan: isi berkas tidak terbaca.',
-            isError: true,
-          );
-          business.dispose();
-          tagline.dispose();
-          return;
-        }
+      if (pendingLogoBytes != null && pendingLogoMime != null) {
         try {
-          await _archiveInputFile(file.name, bytes, 'profile_photo');
+          await LocalFileArchive.instance.saveApplicationImage(
+            key: 'profile_logo',
+            mime: pendingLogoMime!,
+            bytes: pendingLogoBytes!,
+          );
         } catch (error) {
           _message('Foto profil tidak bisa disimpan: $error', isError: true);
           business.dispose();
@@ -3212,6 +3875,9 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           ..tagline = tagline.text.trim()
           ..logo = selectedLogo;
       });
+      if (selectedLogo.isEmpty && pendingLogoBytes == null) {
+        await _saveApplicationImage('profile_logo', '', null);
+      }
       await _save();
       _message('Profil berhasil diperbarui.');
     }
@@ -3341,6 +4007,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
   Future<void> _showSettings() async {
     final navigator = Navigator.of(context);
     var closeScheduled = false;
+    var startFullBackup = false;
     void closeSettings() {
       if (closeScheduled) return;
       closeScheduled = true;
@@ -3381,49 +4048,103 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
               padding: const EdgeInsets.fromLTRB(24, 18, 24, 20),
               blurSigma: 12,
               prominentShadow: true,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: AppText(
-                            'Pengaturan',
-                            style: TextStyle(
-                              color: _ink,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
+              child: ScrollConfiguration(
+                behavior: ScrollConfiguration.of(context)
+                    .copyWith(scrollbars: false),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: AppText(
+                              'Pengaturan',
+                              style: TextStyle(
+                                color: _ink,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                           ),
-                        ),
-                        _PopIconButton(
-                          tooltip: localizeAppText('Tutup'),
-                          onPressed: closeSettings,
-                          style: IconButton.styleFrom(
-                            foregroundColor: _muted,
-                            backgroundColor: Colors.white.withValues(alpha: .5),
-                            minimumSize: const Size(32, 32),
-                            padding: EdgeInsets.zero,
+                          _PopIconButton(
+                            tooltip: localizeAppText('Tutup'),
+                            onPressed: closeSettings,
+                            style: IconButton.styleFrom(
+                              foregroundColor: _muted,
+                              backgroundColor: Colors.white.withValues(
+                                alpha: .5,
+                              ),
+                              minimumSize: const Size(32, 32),
+                              padding: EdgeInsets.zero,
+                            ),
+                            icon: const Icon(Icons.close, size: 17),
                           ),
-                          icon: const Icon(Icons.close, size: 17),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      _languageSettingsCard(),
+                      const SizedBox(height: 14),
+                      _autoSaveSettingsCard(),
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: .48),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: .78),
+                          ),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 18),
-                    _languageSettingsCard(),
-                    const SizedBox(height: 14),
-                    _autoSaveSettingsCard(),
-                    const SizedBox(height: 14),
-                    _resetWarningCard(
-                      onReset: () {
-                        closeSettings();
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (mounted) unawaited(_reset());
-                        });
-                      },
-                    ),
-                  ],
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const AppText(
+                              'Backup seluruh data',
+                              style: TextStyle(
+                                color: _ink,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 5),
+                            AppText(
+                              'Simpan data, foto profil dan produk, serta berkas impor agar bisa dipulihkan di perangkat lain.',
+                              style: TextStyle(
+                                color: _muted,
+                                fontSize: 12,
+                                height: 1.45,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: _ImportDialogPill(
+                                icon: Icons.backup_outlined,
+                                label: 'Backup Settings',
+                                blue: true,
+                                labelOffset: -1,
+                                onPressed: () {
+                                  startFullBackup = true;
+                                  closeSettings();
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      _resetWarningCard(
+                        onReset: () {
+                          closeSettings();
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) unawaited(_reset());
+                          });
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -3433,6 +4154,9 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       transitionBuilder: (context, animation, secondaryAnimation, child) =>
           _normalDialogTransition(animation, child),
     );
+    if (startFullBackup && mounted) {
+      await _backupAllData();
+    }
   }
 
   Future<void> _showAbout() async {
@@ -3649,6 +4373,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                       color: _red,
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
+                      decoration: TextDecoration.none,
                     ),
                   ),
                   SizedBox(height: 4),
@@ -4497,9 +5222,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       setState(() => _data.owners = updatedOwners);
       if (await _save()) _message('Data pemilik berhasil diperbarui.');
     } finally {
-      for (final controller in [...nameControllers, ...pctControllers]) {
-        controller.dispose();
-      }
+      // Dialog masih beranimasi tutup; tunggu sebelum dispose controller.
+      final controllers = [...nameControllers, ...pctControllers];
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        for (final controller in controllers) {
+          controller.dispose();
+        }
+      });
     }
   }
 
@@ -4738,16 +5467,30 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       _productImageProviders.remove(product.id);
       _selectedProductId = _data.products.firstOrNull?.id;
     });
+    await _saveApplicationImage('product:${product.id}', '', null);
     await _save();
+  }
+
+  Future<void> _removeProductImage(Product product) async {
+    setState(() {
+      product.img = '';
+      _productImageSources.remove(product.id);
+      _productImageProviders.remove(product.id);
+    });
+    await _saveApplicationImage('product:${product.id}', '', null);
+    await _save(rebuild: false);
   }
 
   Future<void> _pickProductImage(Product product) async {
     try {
-      final picked = await FilePicker.platform.pickFiles(
-        dialogTitle: localizeAppText('Pilih gambar produk'),
-        type: FileType.custom,
-        allowedExtensions: ['png', 'jpg', 'jpeg', 'webp'],
-        withData: true,
+      final picked = await _withOutsideDismissedPicker(
+        () => FilePicker.platform.pickFiles(
+          dialogTitle: localizeAppText('Pilih gambar produk'),
+          type: FileType.custom,
+          allowedExtensions: ['png', 'jpg', 'jpeg', 'webp'],
+          withData: true,
+          lockParentWindow: true,
+        ),
       );
       if (picked == null || picked.files.isEmpty) return;
       final file = picked.files.single;
@@ -4755,12 +5498,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       if (bytes == null) {
         throw const FormatException('Isi berkas foto tidak terbaca.');
       }
-      await _archiveInputFile(file.name, bytes, 'product_photo');
-      final mime = switch (file.extension?.toLowerCase()) {
-        'jpg' || 'jpeg' => 'image/jpeg',
-        'webp' => 'image/webp',
-        _ => 'image/png',
-      };
+      final mime = _imageMimeFromName(file.name);
+      await LocalFileArchive.instance.saveApplicationImage(
+        key: 'product:${product.id}',
+        mime: mime,
+        bytes: bytes,
+      );
       setState(() => product.img = 'data:$mime;base64,${base64Encode(bytes)}');
       await _save(rebuild: false);
     } catch (error) {
@@ -5644,6 +6387,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           label: 'Impor Penjualan',
           labelOffset: -1,
           onPressed: _showSalesImportDialog,
+          blue: true,
         ),
       ],
     ];
@@ -6865,6 +7609,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                 label: 'Impor Penjualan',
                 labelOffset: -1,
                 onPressed: _showSalesImportDialog,
+                blue: true,
               ),
             ],
           ),
@@ -7318,7 +8063,11 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                   children: [
                     AppText(
                       label,
-                      style: const TextStyle(color: _muted, fontSize: 11),
+                      style: const TextStyle(
+                        color: _muted,
+                        fontSize: 11,
+                        decoration: TextDecoration.none,
+                      ),
                     ),
                     const SizedBox(height: 3),
                     AppText.raw(
@@ -7360,6 +8109,24 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       }
     }
 
+    Future<void> openUpdatePage() async {
+      final uri = Uri.parse('https://github.com/cuoraex/pocketr/');
+      try {
+        final opened = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (!opened && mounted) {
+          _message('Tautan repositori tidak bisa dibuka.', isError: true);
+        }
+      } on PlatformException catch (error) {
+        debugPrint('Could not open update page (${uri.host}): $error');
+        if (mounted) {
+          _message('Tautan repositori tidak bisa dibuka.', isError: true);
+        }
+      }
+    }
+
     void showCreatorSocials() {
       showDialog<void>(
         context: context,
@@ -7379,7 +8146,14 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                     ),
                     child: Row(
                       children: [
-                        SizedBox(width: 24, height: 24, child: logo),
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: Padding(
+                            padding: const EdgeInsets.all(2),
+                            child: logo,
+                          ),
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
@@ -7481,6 +8255,18 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                     ),
                     const SizedBox(height: 14),
                     socialLink(
+                      'GitHub',
+                      'cuoraex',
+                      Image.asset(
+                        'assets/images/github-logo.png',
+                        width: 24,
+                        height: 24,
+                        fit: BoxFit.contain,
+                      ),
+                      Uri.parse('https://github.com/cuoraex'),
+                    ),
+                    const SizedBox(height: 8),
+                    socialLink(
                       'Facebook',
                       'cuoraex',
                       const Icon(Icons.facebook, size: 24, color: _blue),
@@ -7576,30 +8362,96 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           final columns = constraints.maxWidth >= 440 ? 2 : 1;
           final width =
               (constraints.maxWidth - spacing * (columns - 1)) / columns;
-          return Wrap(
-            spacing: spacing,
-            runSpacing: spacing,
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(
-                width: width,
-                child: metadata(
-                  'Dibuat oleh',
-                  'Cuoraex',
-                  Icons.person_outline_rounded,
-                  onTap: showCreatorSocials,
-                  leading: ClipOval(
-                    child: Image.asset(
-                      'assets/images/cuoraex_profile.jpg',
-                      width: 44,
-                      height: 44,
-                      fit: BoxFit.cover,
+              Wrap(
+                spacing: spacing,
+                runSpacing: spacing,
+                children: [
+                  SizedBox(
+                    width: width,
+                    child: metadata(
+                      'Dibuat oleh',
+                      'Cuoraex',
+                      Icons.person_outline_rounded,
+                      onTap: showCreatorSocials,
+                      leading: ClipOval(
+                        child: Image.asset(
+                          'assets/images/cuoraex_profile.jpg',
+                          width: 44,
+                          height: 44,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: width,
+                    child: metadata(
+                      'Versi',
+                      'v$_appVersion',
+                      Icons.sell_outlined,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(15),
+                child: InkWell(
+                  onTap: openUpdatePage,
+                  borderRadius: BorderRadius.circular(15),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: .34),
+                      borderRadius: BorderRadius.circular(15),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: .4),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.system_update_alt_rounded,
+                          size: 20,
+                          color: _blue,
+                        ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              AppText(
+                                'Check for update',
+                                style: TextStyle(
+                                  color: _ink,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              SizedBox(height: 3),
+                              AppText(
+                                'Lihat versi terbaru di GitHub',
+                                style: TextStyle(color: _muted, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(
+                          Icons.open_in_new_rounded,
+                          size: 17,
+                          color: _muted,
+                        ),
+                      ],
                     ),
                   ),
                 ),
-              ),
-              SizedBox(
-                width: width,
-                child: metadata('Versi', 'v$_appVersion', Icons.sell_outlined),
               ),
             ],
           );
@@ -7915,9 +8767,30 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
               onPressed: () => _addProduct(),
               blue: true,
             );
+            final productActions = Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.end,
+              children: [
+                _SlideUpEntrance(
+                  order: _slideUpEntranceOrder,
+                  child: _PocketRActionButton(
+                    icon: Icons.upload_file_outlined,
+                    label: 'Impor HPP',
+                    labelOffset: -1,
+                    onPressed: _showHppImportMenu,
+                    blue: true,
+                  ),
+                ),
+                _SlideUpEntrance(
+                  order: _slideUpEntranceOrder,
+                  child: addButton,
+                ),
+              ],
+            );
             final lowStockWarning = _lowStockWarning();
-            if (constraints.maxWidth >= 360 &&
-                (!hasLowStock || constraints.maxWidth >= 600)) {
+            if (constraints.maxWidth >= 900 &&
+                (!hasLowStock || constraints.maxWidth >= 1100)) {
               return Row(
                 children: [
                   tabs,
@@ -7926,11 +8799,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                     lowStockWarning,
                     const SizedBox(width: 8),
                   ],
-                  if (showProductAdd)
-                    _SlideUpEntrance(
-                      order: _slideUpEntranceOrder,
-                      child: addButton,
-                    ),
+                  if (showProductAdd) productActions,
                 ],
               );
             }
@@ -7946,10 +8815,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                   const SizedBox(height: 8),
                   Align(
                     alignment: Alignment.centerRight,
-                    child: _SlideUpEntrance(
-                      order: _slideUpEntranceOrder,
-                      child: addButton,
-                    ),
+                    child: productActions,
                   ),
                 ],
               ],
@@ -8195,103 +9061,39 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     },
   );
 
-  Widget _productDetails(
-    List<Product> products,
-    Product? selected,
-  ) => LayoutBuilder(
-    builder: (context, constraints) {
-      final productList = _productPicker(products, selected);
-      final productEditor = selected == null
-          ? _emptyProductEditor()
-          : _productDetailCard(
-              selected,
-              _data.sales
-                  .where((sale) => sale.productId == selected.id)
-                  .fold<double>(0, (sum, sale) => sum + sale.qty),
-            );
-      final productPanel = _SlideUpEntrance(
-        order: _slideUpEntranceOrder,
-        child: _FrostedSurface(
-          borderRadius: BorderRadius.circular(22),
-          tintColor: const Color(0xfff7f9fb),
-          tintOpacity: .48,
-          prominentShadow: true,
-          child: LayoutBuilder(
-            builder: (context, panelConstraints) {
-              const sidePanelWidth = 258.0;
-              if (panelConstraints.maxWidth < 650) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(22, 22, 16, 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              _LiquidIconBadge(
-                                icon: Icons.list_alt_outlined,
-                                size: 29,
-                                iconSize: 17,
-                              ),
-                              SizedBox(width: 9),
-                              AppText(
-                                'List produk',
-                                style: TextStyle(
-                                  color: _ink,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-                          productList,
-                        ],
-                      ),
-                    ),
-                    Divider(height: 1, color: _ink.withValues(alpha: .1)),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              _LiquidIconBadge(
-                                icon: Icons.edit_outlined,
-                                size: 29,
-                                iconSize: 17,
-                              ),
-                              SizedBox(width: 9),
-                              AppText(
-                                'Edit produk',
-                                style: TextStyle(
-                                  color: _ink,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-                          productEditor,
-                        ],
-                      ),
-                    ),
-                  ],
+  Widget _productDetails(List<Product> products, Product? selected) =>
+      LayoutBuilder(
+        builder: (context, constraints) {
+          final productList = _productPicker(products, selected);
+          final productListFill = _productPicker(
+            products,
+            selected,
+            fill: true,
+          );
+          final productEditor = selected == null
+              ? _emptyProductEditor()
+              : _productDetailCard(
+                  selected,
+                  _data.sales
+                      .where((sale) => sale.productId == selected.id)
+                      .fold<double>(0, (sum, sale) => sum + sale.qty),
                 );
-              }
-              return Stack(
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: sidePanelWidth,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(22, 22, 17, 14),
+          final productPanel = _SlideUpEntrance(
+            order: _slideUpEntranceOrder,
+            child: _FrostedSurface(
+              borderRadius: BorderRadius.circular(22),
+              tintColor: const Color(0xfff7f9fb),
+              tintOpacity: .48,
+              prominentShadow: true,
+              child: LayoutBuilder(
+                builder: (context, panelConstraints) {
+                  const sidePanelWidth = 258.0;
+                  if (panelConstraints.maxWidth < 650) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(22, 22, 16, 12),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -8313,14 +9115,13 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 14),
+                              const SizedBox(height: 22),
                               productList,
                             ],
                           ),
                         ),
-                      ),
-                      Expanded(
-                        child: Padding(
+                        Divider(height: 1, color: _ink.withValues(alpha: .1)),
+                        Padding(
                           padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -8348,39 +9149,121 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                             ],
                           ),
                         ),
+                      ],
+                    );
+                  }
+                  // The card height follows the editor; the list fills that
+                  // height and scrolls on its own.
+                  const listBottomPadding = 21.0;
+                  return Stack(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(left: sidePanelWidth),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 460),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Row(
+                                  children: [
+                                    _LiquidIconBadge(
+                                      icon: Icons.edit_outlined,
+                                      size: 29,
+                                      iconSize: 17,
+                                    ),
+                                    SizedBox(width: 9),
+                                    AppText(
+                                      'Edit produk',
+                                      style: TextStyle(
+                                        color: _ink,
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 14),
+                                productEditor,
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: sidePanelWidth,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(
+                            22,
+                            22,
+                            17,
+                            listBottomPadding,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Row(
+                                children: [
+                                  _LiquidIconBadge(
+                                    icon: Icons.list_alt_outlined,
+                                    size: 29,
+                                    iconSize: 17,
+                                  ),
+                                  SizedBox(width: 9),
+                                  AppText(
+                                    'List produk',
+                                    style: TextStyle(
+                                      color: _ink,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 22),
+                              Expanded(child: productListFill),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: sidePanelWidth,
+                        top: 0,
+                        bottom: 0,
+                        child: Container(
+                          width: 1,
+                          color: _ink.withValues(alpha: .1),
+                        ),
                       ),
                     ],
-                  ),
-                  Positioned(
-                    left: sidePanelWidth,
-                    top: 0,
-                    bottom: 0,
-                    child: Container(
-                      width: 1,
-                      color: _ink.withValues(alpha: .1),
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
+                  );
+                },
+              ),
+            ),
+          );
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              productPanel,
+              if (selected != null) ...[
+                const SizedBox(height: 12),
+                _stockDetails(products, selected),
+              ],
+            ],
+          );
+        },
       );
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          productPanel,
-          if (selected != null) ...[
-            const SizedBox(height: 12),
-            _stockDetails(products, selected),
-          ],
-        ],
-      );
-    },
-  );
-
-  Widget _productPicker(List<Product> products, Product? selected) {
+  Widget _productPicker(
+    List<Product> products,
+    Product? selected, {
+    bool fill = false,
+  }) {
     if (products.isEmpty) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 14),
@@ -8393,8 +9276,7 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
     }
     const itemHeight = 58.0;
     const pillHeight = 54.0;
-    const maxVisibleProducts = 15;
-    const bottomShadowSpace = 24.0;
+    const bottomShadowSpace = 14.0;
     final selectedIndex = products.indexWhere(
       (product) => product.id == selected?.id,
     );
@@ -8421,14 +9303,11 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
       });
     }
     final listHeight = products.length * itemHeight;
-    final visibleRows = products.length < maxVisibleProducts
-        ? products.length
-        : maxVisibleProducts;
-    final visibleHeight = visibleRows * itemHeight + bottomShadowSpace;
+    final visibleHeight = listHeight + bottomShadowSpace;
     return ClipRect(
       clipper: const _ProductPickerClipper(),
       child: SizedBox(
-        height: visibleHeight,
+        height: fill ? null : visibleHeight,
         child: SingleChildScrollView(
           clipBehavior: Clip.none,
           controller: _productPickerScrollController,
@@ -8640,6 +9519,12 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
               () => _addProduct(product),
               large: true,
             );
+            final removeImageButton = _productAction(
+              'Hapus gambar',
+              () => _removeProductImage(product),
+              danger: true,
+              large: true,
+            );
             final deleteButton = _productAction(
               'Hapus produk',
               () => _deleteProduct(product),
@@ -8686,7 +9571,16 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
                   ],
                 ),
                 const SizedBox(height: 5),
-                deleteButton,
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (product.img.isNotEmpty) ...[
+                      removeImageButton,
+                      const SizedBox(width: 5),
+                    ],
+                    deleteButton,
+                  ],
+                ),
               ],
             );
             return LayoutBuilder(
@@ -8850,6 +9744,11 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           ],
         ),
         const SizedBox(height: 8),
+        _ProductMaterialAdder(
+          catalog: _data.materials,
+          onAdd: (material) => _saveProductMaterial(product, material),
+        ),
+        const SizedBox(height: 10),
         if (materials.isEmpty)
           const _EmptyState(
             title: 'Belum ada bahan',
@@ -8857,11 +9756,6 @@ class _FinanceHomeState extends State<FinanceHome> with WindowListener {
           )
         else
           _productMaterialsTable(product, materials),
-        const SizedBox(height: 10),
-        _ProductMaterialAdder(
-          catalog: _data.materials,
-          onAdd: (material) => _saveProductMaterial(product, material),
-        ),
       ],
     );
   }
@@ -10729,6 +11623,90 @@ class _PocketRActionButtonState extends State<_PocketRActionButton> {
               ),
             ),
           ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _HppImportAction extends StatelessWidget {
+  const _HppImportAction({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    required this.onTap,
+    this.primary = false,
+  });
+
+  final IconData icon;
+  final String title;
+  final String detail;
+  final VoidCallback onTap;
+  final bool primary;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    borderRadius: BorderRadius.circular(16),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      splashFactory: NoSplash.splashFactory,
+      overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+      child: Ink(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        decoration: BoxDecoration(
+          color: primary
+              ? _blue.withValues(alpha: .1)
+              : Colors.white.withValues(alpha: .42),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: primary
+                ? _blue.withValues(alpha: .2)
+                : Colors.white.withValues(alpha: .64),
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: primary
+                    ? _blue.withValues(alpha: .14)
+                    : Colors.white.withValues(alpha: .7),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: _blue, size: 19),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  AppText(
+                    title,
+                    style: const TextStyle(
+                      color: _ink,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  AppText(
+                    detail,
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: _muted.withValues(alpha: .8),
+              size: 20,
+            ),
+          ],
         ),
       ),
     ),
@@ -15281,7 +16259,7 @@ class _ProductPickerClipper extends CustomClipper<Rect> {
 
   @override
   Rect getClip(Size size) =>
-      Rect.fromLTRB(-18, -18, size.width + 18, size.height);
+      Rect.fromLTRB(-18, 0, size.width + 18, size.height);
 
   @override
   bool shouldReclip(covariant _ProductPickerClipper oldClipper) => false;
@@ -15301,6 +16279,7 @@ class _ProductDialogState extends State<_ProductDialog> {
   late final TextEditingController _name;
   late final TextEditingController _colors;
   late final TextEditingController _sizes;
+  final _nameFocusNode = FocusNode();
   bool _saving = false;
 
   @override
@@ -15317,6 +16296,7 @@ class _ProductDialogState extends State<_ProductDialog> {
 
   @override
   void dispose() {
+    _nameFocusNode.dispose();
     _name.dispose();
     _colors.dispose();
     _sizes.dispose();
@@ -15354,7 +16334,10 @@ class _ProductDialogState extends State<_ProductDialog> {
         Navigator.pop(context);
       }
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() => _saving = false);
+        if (addAnother) _nameFocusNode.requestFocus();
+      }
     }
   }
 
@@ -15370,7 +16353,7 @@ class _ProductDialogState extends State<_ProductDialog> {
       child: TextField(
         controller: controller,
         textInputAction: TextInputAction.done,
-        onSubmitted: (_) => _submit(addAnother: false),
+        onSubmitted: (_) => _submit(addAnother: widget.initial == null),
         textAlignVertical: TextAlignVertical.center,
         style: const TextStyle(color: _ink, fontSize: 13, height: 1),
         decoration: InputDecoration(
@@ -15445,9 +16428,10 @@ class _ProductDialogState extends State<_ProductDialog> {
                     'Nama produk',
                     hint: 'mis. Tote Bag Kanvas',
                     autofocus: true,
+                    focusNode: _nameFocusNode,
                     textOffset: const Offset(0, 6),
                     inputVerticalPadding: 0,
-                    onSubmitted: () => _submit(addAnother: false),
+                    onSubmitted: () => _submit(addAnother: isNew),
                     validator: (value) =>
                         (value ?? '').trim().isEmpty ? 'Wajib diisi' : null,
                   ),
