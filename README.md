@@ -1,4 +1,5 @@
 # PocketR
+Vibes Coding
 
 PocketR adalah aplikasi pencatatan keuangan usaha berbasis Flutter. Aplikasi
 membantu mengelola penjualan, biaya, produk, HPP, stok, dan pembagian laba
